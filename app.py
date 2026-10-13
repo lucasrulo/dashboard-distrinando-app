@@ -57,7 +57,7 @@ PROVINCIAS_MAPA = {
     'santa fe': 'Santa Fe', 'santiago del estero': 'Santiago del Estero',
     'tierra del fuego': 'Tierra del Fuego', 'tdf': 'Tierra del Fuego', 'tucumán': 'Tucumán', 'tucuman': 'Tucumán'
 }
-ORDEN_CUOTAS = ["1 pago", "Débito", "3 cuotas", "6 cuotas", "9 cuotas", "12 cuotas", "18 cuotas"]
+ORDEN_CUOTAS = ["1 pago", "Débito", "2 cuotas", "3 cuotas", "4 cuotas", "6 cuotas", "9 cuotas", "12 cuotas", "18 cuotas"]
 SIN_DESCUENTO = {"SIN DESCUENTO", "", "NAN", "NONE"}
 
 # ==============================================================================
@@ -342,6 +342,10 @@ def norm_medio(v):
             return "MeLi · Dinero en cuenta"
         if "ticket" in s or "atm" in s:
             return "MeLi · Efectivo"
+        if "digital_currency" in s:
+            return "MeLi · Mercado Crédito"
+        if "transfer" in s:
+            return "MeLi · Transferencia"
         return "MeLi · Otros"
     if "reversso" in s:
         return "Reversso"
@@ -394,7 +398,7 @@ def load_data():
 
     textos = {"medio_pago": "DESCONOCIDO", "cuotas": "1 Cuota / Otro", "descuento": "SIN DESCUENTO",
               "provincia": "Buenos Aires", "tags": "", "url_web": "#", "fulfillment_status": "pending",
-              "sku": "S/D", "producto": "S/D"}
+              "sku": "S/D", "producto": "S/D", "cliente": ""}
     for c, default in textos.items():
         if c not in df.columns:
             df[c] = default
@@ -403,6 +407,12 @@ def load_data():
         df["producto_base"] = df["producto"].str.split(" / ").str[0]
     if "modelo_color" not in df.columns:
         df["modelo_color"] = df["sku"].str.rsplit("-", n=1).str[0]
+    ids_url = df["url_web"].str.extract(r"(MLA)-?(\d+)").fillna("").agg("".join, axis=1)
+    if "item_id" not in df.columns:
+        df["item_id"] = ids_url
+    else:
+        df["item_id"] = df["item_id"].fillna("").astype(str)
+        df.loc[df["item_id"] == "", "item_id"] = ids_url
     df["producto_base"] = df["producto_base"].fillna("S/D").astype(str)
     df["modelo_color"] = df["modelo_color"].fillna("S/D").astype(str)
 
@@ -427,8 +437,17 @@ def load_data():
     return df
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_aux(nombre):
+    """CSVs secundarios (catálogo, publicaciones, clientes). Si no existen todavía, vuelve vacío."""
+    try:
+        return leer_csv_repo(nombre)
+    except Exception:
+        return pd.DataFrame()
+
+
 COLS_PED = ["canal", "marca", "id_pedido", "fecha", "dia", "total_pedido", "es_reverso", "unidades", "medio_grupo",
-            "cuotas_grupo", "provincia", "estado", "fecha_despacho", "comision"]
+            "cuotas_grupo", "provincia", "estado", "fecha_despacho", "comision", "cliente"]
 
 
 def a_pedidos(d):
@@ -439,7 +458,7 @@ def a_pedidos(d):
         fecha=("fecha", "first"), dia=("dia", "first"), total_pedido=("total_pedido", "first"),
         es_reverso=("es_reverso", "max"), unidades=("cantidad", "sum"), medio_grupo=("medio_grupo", "first"),
         cuotas_grupo=("cuotas_grupo", "first"), provincia=("provincia", "first"), estado=("estado", "first"),
-        fecha_despacho=("fecha_despacho", "first"), comision=("comision_meli", "sum"),
+        fecha_despacho=("fecha_despacho", "first"), comision=("comision_meli", "sum"), cliente=("cliente", "first"),
     ).reset_index()
 
 
@@ -620,7 +639,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de Datos</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -628,9 +647,10 @@ if P.empty:
     st.info("No hay ventas para los filtros seleccionados.")
     st.stop()
 
-tab_res, tab_metas, tab_prod, tab_com, tab_ops = st.tabs([
+tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_cli, tab_ops = st.tabs([
     ":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast", ":material/local_mall: Productos",
-    ":material/payments: Comercial", ":material/local_shipping: Operaciones"])
+    ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/group: Clientes",
+    ":material/local_shipping: Operaciones"])
 
 # ==============================================================================
 # TAB 1 · RESUMEN
@@ -1021,6 +1041,186 @@ with tab_prod:
             html(out)
 
 # ==============================================================================
+# TAB · STOCK & PUBLICACIONES
+# ==============================================================================
+with tab_stock:
+    cat = load_aux("catalogo_stock.csv")
+    pub = load_aux("meli_publicaciones.csv")
+
+    # ---------- REPOSICIÓN UNIFICADA ----------
+    seccion("Reposición", "Stock y demanda unificada",
+            "Velocidad de venta = Tienda Online + MercadoLibre. Stock = depósito (inventario de Shopify).")
+    s1, s2, s3 = st.columns([1.2, 1, 1.1])
+    with s1:
+        nivel_s = st.segmented_control("Nivel", ["Modelo/Color", "Talle (SKU)"], default="Modelo/Color", key="stk_nivel") or "Modelo/Color"
+    with s2:
+        dias_v = int((st.segmented_control("Ventas de los últimos", ["15", "30", "60"], default="30", key="stk_dias") or "30"))
+    with s3:
+        umbral = int((st.segmented_control("Alerta si cubre menos de (días)", ["15", "30", "45"], default="30", key="stk_umbral") or "30"))
+    clave_s = "modelo_color" if nivel_s == "Modelo/Color" else "sku"
+    nom_s = "producto_base" if nivel_s == "Modelo/Color" else "producto"
+    vent = base_net[(base_net["dia"] > hoy - timedelta(days=dias_v)) & (base_net[clave_s] != "S/D") & (base_net["cantidad"] > 0)]
+    if vent.empty or cat.empty:
+        st.info("Faltan datos de ventas o de catálogo para calcular la reposición.")
+    else:
+        vu = vent.groupby(["marca", clave_s, "canal"], observed=True)["cantidad"].sum().unstack(fill_value=0)
+        vu.columns = [str(c) for c in vu.columns]
+        for c in CANALES:
+            if c not in vu.columns:
+                vu[c] = 0
+        vu["total"] = vu[CANALES].sum(axis=1)
+        vu.index = vu.index.set_levels([lv.astype(str) for lv in vu.index.levels])
+        nombres_s = vent.groupby(["marca", clave_s], observed=True)[nom_s].first()
+        nombres_s.index = nombres_s.index.set_levels([lv.astype(str) for lv in nombres_s.index.levels])
+        cat_m = cat[cat["marca"].isin(marcas_sel)].copy()
+        cat_m["stock"] = pd.to_numeric(cat_m["stock"], errors="coerce").fillna(0).clip(lower=0)
+        stk = cat_m.groupby(["marca", clave_s])["stock"].sum()
+        R = vu.join(stk, how="left").join(nombres_s.rename("nombre"), how="left").reset_index()
+        R["vel"] = R["total"] / dias_v
+        R["cobertura"] = np.where(R["vel"] > 0, R["stock"] / R["vel"], np.inf)
+        R["reponer"] = np.maximum(0, np.ceil(R["vel"] * 60 - R["stock"].fillna(0)))
+        mc_key = "modelo_color" if clave_s == "modelo_color" else None
+        R["mc"] = R[clave_s] if mc_key else R[clave_s].str.rsplit("-", n=1).str[0]
+        if not pub.empty:
+            est = pub.groupby(["marca", "modelo_color"])["estado"].agg(lambda s: "Activa" if (s == "active").any() else ("Pausada" if (s == "paused").any() else "—"))
+            R = R.merge(est.rename("meli").reset_index().rename(columns={"modelo_color": "mc"}), on=["marca", "mc"], how="left")
+        else:
+            R["meli"] = "s/d"
+        R["meli"] = R["meli"].fillna("—")
+
+        con_stock = R[R["stock"].notna()]
+        riesgo = con_stock[(con_stock["cobertura"] < umbral)].sort_values("vel", ascending=False)
+        agotados = con_stock[(con_stock["stock"] <= 0)]
+        u_t, u_m = R["Tienda Online"].sum(), R["MercadoLibre"].sum()
+        k = st.columns(4)
+        k[0].markdown(kpi_card(f"En riesgo (< {umbral} días)", fmt_num(len(riesgo)), "<span class='delta flat'>con ventas en el período</span>", "", "#F87171", sm=True), unsafe_allow_html=True)
+        k[1].markdown(kpi_card("Agotados con demanda", fmt_num(len(agotados)), "<span class='delta down'>stock 0 y ventas recientes</span>", "", "#FBBF24", sm=True), unsafe_allow_html=True)
+        k[2].markdown(kpi_card("Demanda que aporta MeLi", f"{fmt_dec(u_m / (u_t + u_m) * 100 if (u_t + u_m) else 0)}%",
+                               f"<span class='delta up'>+{fmt_dec(u_m / u_t * 100 if u_t else 0)}% vs. mirar solo Shopify</span>",
+                               split_html({"Tienda Online": u_t, "MercadoLibre": u_m}), "#FFE600", sm=True), unsafe_allow_html=True)
+        k[3].markdown(kpi_card("Unidades en depósito", fmt_num(cat_m["stock"].sum()),
+                               f"<span class='delta flat'>{fmt_num(cat_m[clave_s].nunique())} {'modelos' if clave_s == 'modelo_color' else 'SKUs'} activos</span>", "", "#22D3EE", sm=True),
+                      unsafe_allow_html=True)
+        st.write("")
+        ver = st.segmented_control("Mostrar", ["En riesgo", "Agotados", "Todos los que venden"], default="En riesgo", key="stk_ver") or "En riesgo"
+        T = riesgo if ver == "En riesgo" else (agotados.sort_values("vel", ascending=False) if ver == "Agotados" else R.sort_values("vel", ascending=False))
+        filas = ""
+        for _, r in T.head(25).iterrows():
+            cob = r["cobertura"]
+            cls = "bad" if cob < umbral / 2 else ("warn" if cob < umbral else "ok")
+            cob_txt = "∞" if not np.isfinite(cob) else f"{cob:.0f} días"
+            pill_meli = {"Activa": "ok", "Pausada": "warn"}.get(r["meli"], "")
+            meli_html = f"<span class='pill {pill_meli}'>{r['meli']}</span>" if pill_meli else str(r["meli"])
+            filas += (f"<tr><td><img src='{img_azure(r['marca'], r['mc'])}' style='width:38px;height:38px;object-fit:contain;background:#fff;border-radius:8px;vertical-align:middle;margin-right:8px'>"
+                      f"<span class='dot' style='background:{PALETA_MARCAS.get(r['marca'], '#94A3B8')}'></span>{r['marca']}</td>"
+                      f"<td style='text-align:left;max-width:280px;overflow:hidden;text-overflow:ellipsis'>{str(r['nombre'])[:60]}</td><td>{r[clave_s]}</td>"
+                      f"<td>{fmt_num(r['Tienda Online'])}</td><td>{fmt_num(r['MercadoLibre'])}</td><td class='strong'>{fmt_dec(r['vel'], 1)}</td>"
+                      f"<td>{fmt_num(r['stock']) if pd.notna(r['stock']) else '—'}</td><td><span class='pill {cls}'>{cob_txt}</span></td>"
+                      f"<td style='color:#22D3EE;font-weight:700'>{fmt_num(r['reponer'])}</td>"
+                      f"<td>{meli_html}</td></tr>")
+        if filas:
+            html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Marca</th><th style='text-align:left'>Producto</th><th>Código</th>"
+                 f"<th>Vend. Tienda</th><th>Vend. MeLi</th><th>Un./día</th><th>Stock</th><th>Cobertura</th><th>Reponer (60 d)</th><th>MeLi</th></tr></thead><tbody>{filas}</tbody></table></div>")
+            st.caption(f"Mostrando hasta 25 filas ordenadas por velocidad de venta. 'Reponer' = unidades para cubrir 60 días a la velocidad actual.")
+        else:
+            st.success("No hay productos en esta situación. 🎉")
+        st.download_button("Descargar reposición completa (CSV)",
+                           R.drop(columns=["mc"]).rename(columns={"vel": "unid_por_dia", "nombre": "producto"}).to_csv(index=False).encode("utf-8"),
+                           file_name="reposicion_unificada.csv", mime="text/csv", icon=":material/download:")
+        if R["stock"].isna().any():
+            st.caption(f"ℹ️ {int(R['stock'].isna().sum())} códigos vendidos no están en el catálogo activo de Shopify (stock sin dato).")
+
+    # ---------- PUBLICACIONES MELI ----------
+    seccion("MercadoLibre", "Publicaciones: visitas, conversión y problemas",
+            "Se actualiza 2 veces por día. Conversión = pedidos / visitas de los últimos 30 días.")
+    if pub.empty:
+        st.info("Todavía no hay datos de publicaciones. Se generan con el workflow diario (Publicaciones MeLi + Clientes).")
+    else:
+        pm = pub[pub["marca"].isin(marcas_sel)].copy()
+        v30 = base_net[(base_net["canal"] == "MercadoLibre") & (base_net["dia"] > hoy - timedelta(days=30)) & (base_net["item_id"] != "")]
+        vi = v30.groupby("item_id").agg(unidades=("cantidad", "sum"), pedidos=("id_pedido", "nunique"))
+        pm = pm.merge(vi, left_on="item_id", right_index=True, how="left").fillna({"unidades": 0, "pedidos": 0})
+        pm["visitas_30d"] = pd.to_numeric(pm["visitas_30d"], errors="coerce").fillna(0)
+        pm["conv"] = np.where(pm["visitas_30d"] > 0, pm["pedidos"] / pm["visitas_30d"] * 100, np.nan)
+        stk_dep = cat.groupby(["marca", "modelo_color"])["stock"].sum().clip(lower=0) if not cat.empty else pd.Series(dtype=float)
+        pm = pm.merge(stk_dep.rename("stock_deposito"), left_on=["marca", "modelo_color"], right_index=True, how="left")
+        act = pm[pm["estado"] == "active"]
+        vis_tot, ped_tot = act["visitas_30d"].sum(), act["pedidos"].sum()
+        k = st.columns(4)
+        k[0].markdown(kpi_card("Publicaciones activas", fmt_num(len(act)), f"<span class='delta flat'>{fmt_num((pm['estado'] == 'paused').sum())} pausadas</span>", "", "#FFE600", sm=True), unsafe_allow_html=True)
+        k[1].markdown(kpi_card("Visitas (30 días)", fmt_num(vis_tot), "", "", "#22D3EE", sm=True), unsafe_allow_html=True)
+        k[2].markdown(kpi_card("Conversión promedio", f"{fmt_dec(ped_tot / vis_tot * 100 if vis_tot else 0, 2)}%", "", "", "#34D399", sm=True), unsafe_allow_html=True)
+        k[3].markdown(kpi_card("Activas sin ventas (30 d)", fmt_num(((act["pedidos"] == 0) & (act["visitas_30d"] > 0)).sum()),
+                               "<span class='delta down'>con visitas pero 0 pedidos</span>", "", "#F87171", sm=True), unsafe_allow_html=True)
+        st.write("")
+        g1, g2 = st.columns([1.3, 1])
+        with g1:
+            sc = a_str(act[act["visitas_30d"] > 0])
+            fig = px.scatter(sc, x="visitas_30d", y="unidades", color="marca", color_discrete_map=PALETA_MARCAS, log_x=True,
+                             hover_name="titulo", hover_data={"conv": ":.2f", "precio": ":,.0f"}, title="Visitas vs. unidades vendidas (30 días)")
+            fig.update_traces(marker=dict(size=8, opacity=0.75, line=dict(width=0)))
+            fig.update_layout(xaxis_title="Visitas (escala log)", yaxis_title="Unidades vendidas")
+            st.plotly_chart(estilo(fig, 420), width="stretch")
+        with g2:
+            umbral_vis = act["visitas_30d"].quantile(0.75) if len(act) else 0
+            conv_med = act.loc[act["visitas_30d"] > 0, "conv"].median() if len(act) else 0
+            opp = act[(act["visitas_30d"] >= umbral_vis) & (act["conv"].fillna(0) < (conv_med or 0) / 2)].sort_values("visitas_30d", ascending=False).head(12)
+            filas = "".join(
+                f"<tr><td style='max-width:230px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:45]}</a></td>"
+                f"<td>{fmt_num(r['visitas_30d'])}</td><td>{fmt_num(r['pedidos'])}</td><td><span class='pill bad'>{fmt_dec(r['conv'] if pd.notna(r['conv']) else 0, 2)}%</span></td>"
+                f"<td>{fmt_ars(r['precio'] or 0)}</td></tr>" for _, r in opp.iterrows())
+            html("<div class='scope-head'>🔎 Muchas visitas, poca conversión</div>")
+            if filas:
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>Visitas</th><th>Pedidos</th><th>Conv.</th><th>Precio</th></tr></thead>"
+                     f"<tbody>{filas}</tbody></table></div>")
+                st.caption(f"Top 25% en visitas y menos de la mitad de la conversión mediana ({fmt_dec(conv_med or 0, 2)}%). Revisar precio, fotos y ficha.")
+            else:
+                st.success("No hay publicaciones con ese problema.")
+
+        # Problemas de stock entre MeLi y depósito
+        p1, p2 = st.columns(2)
+        pausadas_stock = pm[(pm["estado"] == "paused") & (pm["stock_deposito"].fillna(0) > 0)].sort_values("stock_deposito", ascending=False)
+        activas_sin = pm[(pm["estado"] == "active") & (pm["stock_deposito"].fillna(-1) == 0)].sort_values("pedidos", ascending=False)
+        for col, titulo, dfp, cls, nota in [
+            (p1, f"⏸️ Pausadas con stock en depósito ({len(pausadas_stock)})", pausadas_stock, "warn", "Oportunidad: se podrían reactivar."),
+            (p2, f"⚠️ Activas sin stock en depósito ({len(activas_sin)})", activas_sin, "bad", "Riesgo de vender algo que no hay."),
+        ]:
+            with col:
+                html(f"<div class='scope-head'>{titulo}</div>")
+                if dfp.empty:
+                    st.success("Nada para revisar.")
+                else:
+                    filas = "".join(
+                        f"<tr><td style='max-width:240px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:42]}</a></td>"
+                        f"<td>{r['marca']}</td><td>{r['modelo_color']}</td><td>{fmt_num(r['stock'])}</td><td><span class='pill {cls}'>{fmt_num(r['stock_deposito'] if pd.notna(r['stock_deposito']) else 0)}</span></td></tr>"
+                        for _, r in dfp.head(12).iterrows())
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>Marca</th><th>Código</th><th>Stock MeLi</th><th>Depósito</th></tr></thead>"
+                         f"<tbody>{filas}</tbody></table></div>")
+                    st.caption(nota)
+
+        # Catálogo: precio para ganar
+        cat_pub = pm[(pm["catalogo"].astype(str).str.lower() == "true") & (pm["estado"] == "active")].copy()
+        if not cat_pub.empty and cat_pub["catalogo_estado"].notna().any():
+            seccion("Catálogo MeLi", "Competencia en publicaciones de catálogo", "Quién se queda con la compra cuando hay varios vendedores del mismo producto.")
+            est = cat_pub["catalogo_estado"].fillna("sin dato").astype(str)
+            n_win = int(est.isin(["winning", "sharing_first_place"]).sum())
+            n_comp = int((est == "competing").sum())
+            k = st.columns(3)
+            k[0].markdown(kpi_card("Ganando", fmt_num(n_win), "", "", "#34D399", sm=True), unsafe_allow_html=True)
+            k[1].markdown(kpi_card("Perdiendo", fmt_num(n_comp), "", "", "#F87171", sm=True), unsafe_allow_html=True)
+            k[2].markdown(kpi_card("Publicaciones de catálogo", fmt_num(len(cat_pub)), "", "", "#FFE600", sm=True), unsafe_allow_html=True)
+            comp = cat_pub[est == "competing"].copy()
+            if not comp.empty:
+                comp["dif"] = (pd.to_numeric(comp["precio"], errors="coerce") / pd.to_numeric(comp["precio_para_ganar"], errors="coerce") - 1) * 100
+                filas = "".join(
+                    f"<tr><td style='max-width:280px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:50]}</a></td>"
+                    f"<td>{r['marca']}</td><td>{fmt_ars(r['precio'] or 0)}</td><td style='color:#34D399;font-weight:700'>{fmt_ars(r['precio_para_ganar']) if pd.notna(r['precio_para_ganar']) else '—'}</td>"
+                    f"<td><span class='pill bad'>{fmt_dec(r['dif'], 1) + '%' if pd.notna(r['dif']) else '—'}</span></td><td>{fmt_num(r['visitas_30d'])}</td></tr>"
+                    for _, r in comp.sort_values("visitas_30d", ascending=False).head(20).iterrows())
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>Marca</th><th>Precio actual</th><th>Precio para ganar</th><th>Diferencia</th><th>Visitas</th></tr></thead>"
+                     f"<tbody>{filas}</tbody></table></div>")
+
+# ==============================================================================
 # TAB 4 · COMERCIAL
 # ==============================================================================
 with tab_com:
@@ -1074,32 +1274,167 @@ with tab_com:
                 st.plotly_chart(estilo(fig, 380), width="stretch")
 
     # ---------- FINANZAS ----------
-    seccion("Cobros", "Finanzas", "Medios de pago y financiación en cuotas.")
+    seccion("Cobros", "Finanzas", "Medios de pago y financiación en cuotas, abierto por canal.")
     if Pc.empty:
         st.info("Sin ventas para este canal.")
     else:
-        g1, g2 = st.columns([1, 1.3])
-        with g1:
-            mp = a_str(Pc.groupby("medio_grupo", observed=True)["total_pedido"].sum().reset_index())
-            fig = px.pie(mp, values="total_pedido", names="medio_grupo", hole=0.62, title="Facturación por medio de pago",
-                         color="medio_grupo", color_discrete_map={
-                             "Mercado Pago": "#009EE3", "Mobbex": "#A78BFA", "Reversso": "#F472B6", "Transferencia": "#34D399",
-                             "Otros": "#64748B", "MeLi · Tarjeta de crédito": "#FFE600", "MeLi · Débito": "#FDE68A",
-                             "MeLi · Dinero en cuenta": "#FBBF24", "MeLi · Efectivo": "#F59E0B", "MeLi · Otros": "#CA8A04"})
-            fig.update_traces(textinfo="percent", marker=dict(line=dict(color="#060A13", width=2)),
+        COLOR_MEDIO = {"Mercado Pago": "#009EE3", "Mobbex": "#A78BFA", "Reversso": "#F472B6", "Transferencia": "#34D399",
+                       "Otros": "#64748B", "MeLi · Tarjeta de crédito": "#FFE600", "MeLi · Débito": "#FDE68A",
+                       "MeLi · Dinero en cuenta": "#FBBF24", "MeLi · Mercado Crédito": "#F59E0B", "MeLi · Efectivo": "#D97706",
+                       "MeLi · Transferencia": "#CA8A04", "MeLi · Otros": "#A16207"}
+        canales_fin = [c for c in CANALES if (Pc["canal"] == c).any()]
+        cols_fin = st.columns(len(canales_fin))
+        for col, c in zip(cols_fin, canales_fin):
+            Pcc = Pc[Pc["canal"] == c]
+            mp = a_str(Pcc.groupby("medio_grupo", observed=True)["total_pedido"].sum().reset_index())
+            fig = px.pie(mp, values="total_pedido", names="medio_grupo", hole=0.62, color="medio_grupo",
+                         color_discrete_map=COLOR_MEDIO, title=f"{c} · facturación por medio de pago")
+            fig.update_traces(textinfo="percent", textposition="inside", marker=dict(line=dict(color="#060A13", width=2)),
                               hovertemplate="%{label}<br>$%{value:,.0f}<extra></extra>")
-            st.plotly_chart(estilo(fig, 400), width="stretch")
-        with g2:
-            cu = Pc.groupby(["cuotas_grupo", "canal"], observed=True).size().rename("ped").reset_index()
-            cu["pct"] = cu["ped"] / cu.groupby("canal", observed=True)["ped"].transform("sum") * 100
-            cu = a_str(cu)
+            fig.add_annotation(text=f"<b>{fmt_compact(Pcc['total_pedido'].sum())}</b>", showarrow=False,
+                               font=dict(size=17, family="Space Grotesk, sans-serif", color=COLOR_CANAL[c]))
+            with col:
+                st.plotly_chart(estilo(fig, 400), width="stretch", key=f"fin_medio_{c}")
+
+        # Cuotas: solo canales que informan financiación (Shopify hoy no la trae en el pedido)
+        cu = Pc.groupby(["cuotas_grupo", "canal"], observed=True).size().rename("ped").reset_index()
+        cu["canal"] = cu["canal"].astype(str)
+        con_cuotas = [c for c in canales_fin if set(cu.loc[cu["canal"] == c, "cuotas_grupo"].astype(str)) - {"1 pago"}]
+        sin_cuotas = [c for c in canales_fin if c not in con_cuotas]
+        cu = cu[cu["canal"].isin(con_cuotas)]
+        if cu.empty:
+            st.info("Este canal no informa la cantidad de cuotas de cada pedido.")
+        else:
+            cu["pct"] = cu["ped"] / cu.groupby("canal")["ped"].transform("sum") * 100
+            tk = Pc[Pc["canal"].astype(str).isin(con_cuotas)].groupby(["cuotas_grupo", "canal"], observed=True)["total_pedido"].mean()
+            tk = a_str(tk.rename("ticket").reset_index())
+            cu = a_str(cu).merge(tk, on=["cuotas_grupo", "canal"], how="left")
             orden = [c for c in ORDEN_CUOTAS if c in set(cu["cuotas_grupo"])] + sorted(set(cu["cuotas_grupo"]) - set(ORDEN_CUOTAS))
-            fig = px.bar(cu, x="cuotas_grupo", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
-                         category_orders={"cuotas_grupo": orden}, title="Pedidos por financiación (% dentro de cada canal)",
-                         text_auto=".0f", custom_data=["ped"])
-            fig.update_traces(marker_line_width=0, hovertemplate="%{x}<br>%{y:.1f}% · %{customdata[0]} pedidos<extra></extra>")
-            fig.update_layout(xaxis_title="", yaxis_title="% de pedidos", bargap=0.25)
-            st.plotly_chart(estilo(fig, 400), width="stretch")
+            g1, g2 = st.columns(2)
+            with g1:
+                fig = px.bar(cu, x="cuotas_grupo", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
+                             category_orders={"cuotas_grupo": orden}, title="Pedidos por financiación (% de pedidos del canal)",
+                             text=cu["pct"].map(lambda v: fmt_dec(v, 0) + "%"), custom_data=["ped"])
+                fig.update_traces(marker_line_width=0, hovertemplate="%{x}<br>%{y:.1f}% · %{customdata[0]} pedidos<extra></extra>")
+                fig.update_layout(xaxis_title="", yaxis_title="% de pedidos", bargap=0.25)
+                st.plotly_chart(estilo(fig, 380), width="stretch")
+            with g2:
+                fig = px.bar(cu, x="cuotas_grupo", y="ticket", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
+                             category_orders={"cuotas_grupo": orden}, title="Ticket promedio según financiación",
+                             text=cu["ticket"].map(fmt_compact))
+                fig.update_traces(marker_line_width=0, hovertemplate="%{x}<br>$%{y:,.0f}<extra></extra>")
+                fig.update_layout(xaxis_title="", yaxis_title="Ticket ($)", bargap=0.25)
+                st.plotly_chart(estilo(fig, 380), width="stretch")
+            if sin_cuotas:
+                st.caption(f"ℹ️ {', '.join(sin_cuotas)}: el pedido no trae la cantidad de cuotas, por eso no aparece en estos gráficos.")
+
+# ==============================================================================
+# TAB · CLIENTES
+# ==============================================================================
+with tab_cli:
+    res_c = load_aux("clientes_resumen.csv")
+    coh_c = load_aux("clientes_cohortes.csv")
+    sel_cl = selector_canal("cli_canal")
+    Pcl = por_canal(P, sel_cl)
+    Pcl = Pcl[Pcl["cliente"].astype(str).str.len() > 0]
+    if res_c.empty or Pcl.empty:
+        st.info("Todavía no hay datos de clientes. Se habilitan después de correr una vez el workflow 'Backfill clientes'.")
+    else:
+        st.caption("Los clientes se identifican por canal: MercadoLibre no comparte el email, así que un mismo cliente en "
+                   "Tienda y MeLi se cuenta dos veces en Consolidado. 'Nuevo' = primera compra desde que hay datos.")
+        res_c["canal"] = res_c["canal"].astype(str)
+        prim = dict(zip(zip(res_c["canal"], res_c["cliente"].astype(str)), res_c["primera_compra"].astype(str)))
+        Pcl = Pcl.copy()
+        Pcl["canal"] = Pcl["canal"].astype(str)
+        Pcl["es_nuevo"] = [prim.get((c, str(cl)), "") == str(d) for c, cl, d in zip(Pcl["canal"], Pcl["cliente"], Pcl["dia"])]
+        cli_u = Pcl.groupby(["canal", "cliente"]).agg(nuevo=("es_nuevo", "max"), fact=("total_pedido", "sum"), ped=("id_pedido", "count"))
+
+        # ---------- KPIs ----------
+        seccion("Clientes", "Nuevos vs. recurrentes", f"Clientes que compraron en el período ({rango_txt}).")
+        n_cli, n_new = len(cli_u), int(cli_u["nuevo"].sum())
+        fact_rec = cli_u.loc[~cli_u["nuevo"], "fact"].sum()
+        tk_new = Pcl.loc[Pcl["es_nuevo"], "total_pedido"].mean() if Pcl["es_nuevo"].any() else 0
+        tk_rec = Pcl.loc[~Pcl["es_nuevo"], "total_pedido"].mean() if (~Pcl["es_nuevo"]).any() else 0
+        k = st.columns(5)
+        k[0].markdown(kpi_card("Clientes únicos", fmt_num(n_cli), "", split_html(cli_u.groupby(level=0).size().to_dict() | {c: 0 for c in CANALES if c not in cli_u.index.get_level_values(0)}), "#22D3EE", sm=True), unsafe_allow_html=True)
+        k[1].markdown(kpi_card("Clientes nuevos", f"{fmt_dec(n_new / n_cli * 100 if n_cli else 0)}%", f"<span class='delta flat'>{fmt_num(n_new)} clientes</span>", "", "#34D399", sm=True), unsafe_allow_html=True)
+        k[2].markdown(kpi_card("Venta de recurrentes", f"{fmt_dec(fact_rec / cli_u['fact'].sum() * 100 if cli_u['fact'].sum() else 0)}%", "<span class='delta flat'>de la facturación</span>", "", "#A78BFA", sm=True), unsafe_allow_html=True)
+        k[3].markdown(kpi_card("Pedidos por cliente", fmt_dec(cli_u["ped"].mean(), 2), "", "", "#FBBF24", sm=True), unsafe_allow_html=True)
+        k[4].markdown(kpi_card("Ticket nuevo vs. recurrente", f"{fmt_compact(tk_new)} / {fmt_compact(tk_rec)}", "", "", "#F472B6", sm=True), unsafe_allow_html=True)
+        st.write("")
+        g1, g2 = st.columns([1.4, 1])
+        with g1:
+            Pcl["semana"] = pd.to_datetime(Pcl["dia"]).dt.to_period("W-SUN").dt.start_time
+            sem = Pcl.groupby(["semana", "es_nuevo"])["cliente"].nunique().rename("clientes").reset_index()
+            sem["tipo"] = np.where(sem["es_nuevo"], "Nuevos", "Recurrentes")
+            fig = px.bar(sem, x="semana", y="clientes", color="tipo", color_discrete_map={"Nuevos": "#34D399", "Recurrentes": "#A78BFA"},
+                         title="Clientes por semana")
+            fig.update_traces(marker_line_width=0)
+            fig.update_layout(xaxis_title="", yaxis_title="Clientes", bargap=0.2)
+            st.plotly_chart(estilo(fig, 380), width="stretch")
+
+        # ---------- FRECUENCIA Y VALOR (histórico) ----------
+        rc = res_c if sel_cl == "Consolidado" else res_c[res_c["canal"] == sel_cl]
+        rc = rc[rc["marcas"].astype(str).apply(lambda s: any(m in s.split("|") for m in marcas_sel))]
+        with g2:
+            rc_ = rc.copy()
+            rc_["compras"] = pd.cut(rc_["pedidos"], [0, 1, 2, 3, 4, 10**9], labels=["1", "2", "3", "4", "5+"])
+            fr = rc_.groupby(["canal", "compras"], observed=True).size().rename("n").reset_index()
+            fr["pct"] = fr["n"] / fr.groupby("canal")["n"].transform("sum") * 100
+            fig = px.bar(fr, x="compras", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
+                         title="Cantidad de compras por cliente (histórico)", text=fr["pct"].map(lambda v: fmt_dec(v, 0) + "%"))
+            fig.update_traces(marker_line_width=0)
+            fig.update_layout(xaxis_title="Compras", yaxis_title="% de clientes", bargap=0.25)
+            st.plotly_chart(estilo(fig, 380), width="stretch")
+
+        seccion("Valor", "Valor del cliente", "Acumulado desde que hay datos (Tienda: ene-2026 · MeLi: sep-2026).")
+        k = st.columns(4)
+        recompra = (rc["pedidos"] >= 2).mean() * 100 if len(rc) else 0
+        g_sorted = rc["gasto"].sort_values(ascending=False)
+        top10 = g_sorted.head(max(1, len(g_sorted) // 10)).sum() / g_sorted.sum() * 100 if g_sorted.sum() else 0
+        k[0].markdown(kpi_card("Clientes (histórico)", fmt_num(len(rc)), "", "", "#22D3EE", sm=True), unsafe_allow_html=True)
+        k[1].markdown(kpi_card("Tasa de recompra", f"{fmt_dec(recompra)}%", "<span class='delta flat'>compraron 2 o más veces</span>", "", "#34D399", sm=True), unsafe_allow_html=True)
+        k[2].markdown(kpi_card("Gasto promedio por cliente", fmt_ars(rc["gasto"].mean() if len(rc) else 0), "", "", "#FBBF24", sm=True), unsafe_allow_html=True)
+        k[3].markdown(kpi_card("Top 10% de clientes", f"{fmt_dec(top10)}%", "<span class='delta flat'>de la facturación</span>", "", "#F472B6", sm=True), unsafe_allow_html=True)
+        st.write("")
+
+        c1, c2 = st.columns([1.2, 1])
+        with c1:
+            canal_coh = sel_cl if sel_cl != "Consolidado" else "Tienda Online"
+            ch = coh_c[coh_c["canal"] == canal_coh] if not coh_c.empty else coh_c
+            if ch.empty:
+                st.info("Sin datos de cohortes para este canal.")
+            else:
+                base0 = ch[ch["mes_n"] == 0].set_index("cohorte")["clientes"]
+                base0 = base0[base0 >= 30]  # cohortes muy chicas distorsionan el %
+                ch = ch[ch["cohorte"].isin(base0.index)]
+                ch = ch[ch["mes_n"] > 0].copy()
+                ch["ret"] = ch["clientes"] / ch["cohorte"].map(base0) * 100
+                mat = ch.pivot(index="cohorte", columns="mes_n", values="ret").sort_index()
+                mat.columns = [f"+{c} m" for c in mat.columns]
+                fig = px.imshow(mat, text_auto=".1f", aspect="auto", color_continuous_scale=["#0F172A", "#155E75", "#22D3EE"],
+                                title=f"Retención por cohorte · {canal_coh} (% que volvió a comprar)")
+                fig.update_layout(xaxis_title="Meses después de la 1ª compra", yaxis_title="Mes de 1ª compra", coloraxis_showscale=False)
+                st.plotly_chart(estilo(fig, 400), width="stretch")
+        with c2:
+            rt = res_c[(res_c["canal"] == "Tienda Online")]
+            rt = rt[rt["marcas"].astype(str).apply(lambda s: any(m in s.split("|") for m in marcas_sel))]
+            if rt.empty:
+                st.info("Sin datos de Tienda Online para el cruce de marcas.")
+            else:
+                multi = (rt["n_marcas"] >= 2).mean() * 100
+                html(kpi_card("Clientes multimarca (Tienda)", f"{fmt_dec(multi)}%", "<span class='delta flat'>compraron 2 o más marcas</span>", "", "#A78BFA", sm=True))
+                mlist = [m for m in marcas_sel]
+                mat = pd.DataFrame(0, index=mlist, columns=mlist)
+                for s_ in rt.loc[rt["n_marcas"] >= 2, "marcas"].astype(str):
+                    ms = [m for m in s_.split("|") if m in mlist]
+                    for a_, b_ in combinations(ms, 2):
+                        mat.loc[a_, b_] += 1
+                        mat.loc[b_, a_] += 1
+                fig = px.imshow(mat, text_auto=True, aspect="auto", color_continuous_scale=["#0F172A", "#5B21B6", "#A78BFA"],
+                                title="Clientes que compraron ambas marcas")
+                fig.update_layout(xaxis_title="", yaxis_title="", coloraxis_showscale=False)
+                st.plotly_chart(estilo(fig, 300), width="stretch")
 
 # ==============================================================================
 # TAB 5 · OPERACIONES
