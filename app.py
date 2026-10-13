@@ -620,7 +620,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de Control</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -721,18 +721,47 @@ with tab_res:
             st.plotly_chart(estilo(fig, 214), width="stretch")
 
     # ---------- MARCAS ----------
-    seccion("Unidades de negocio", "Rendimiento por marca", "Venta neta del período, hoy y mix de canal.")
+    seccion("Unidades de negocio", "Rendimiento por marca", "Venta neta del período y de hoy. Elegí General o un canal.")
+    vista_m = st.segmented_control("Canal", ["General", "Tienda Online", "MercadoLibre"], default="General",
+                                   key="marcas_canal") or "General"
     marcas_orden = [m for m in marcas_sel if m in set(P["marca"].astype(str))]
+
+    def _filtro(d):
+        return d if (vista_m == "General" or d.empty) else d[d["canal"] == vista_m]
+
+    Pv, Pv_prev = _filtro(P), _filtro(P_prev)
+    Pv_hoy = _filtro(P_hoy) if not P_hoy.empty else P_hoy
     for i in range(0, len(marcas_orden), 5):
         cols = st.columns(5)
         for j, m in enumerate(marcas_orden[i:i + 5]):
-            Pm_ = P[P["marca"] == m]
-            r = resumen(Pm_)
-            rp = resumen(P_prev[P_prev["marca"] == m]) if hay_prev else None
-            hoy_m = P_hoy[P_hoy["marca"] == m]["total_pedido"].sum() if not P_hoy.empty else 0
             acc = PALETA_MARCAS.get(m, "#94A3B8")
+            Pm_ = Pv[Pv["marca"] == m]
+            if Pm_.empty:
+                cols[j].markdown(
+                    f"<div class='brand' style='--b-accent:{acc}'><div class='brand-name' style='color:{acc}'>{m}</div>"
+                    f"<div class='brand-big' style='color:#8B95A7'>$0</div><span class='delta flat'>sin ventas en {vista_m}</span></div>",
+                    unsafe_allow_html=True)
+                continue
+            r = resumen(Pm_)
+            rp = resumen(Pv_prev[Pv_prev["marca"] == m]) if hay_prev else None
+            hoy_m = Pv_hoy[Pv_hoy["marca"] == m]["total_pedido"].sum() if not Pv_hoy.empty else 0
             upt = r["un"] / r["ords"] if r["ords"] else 0
             asp = r["fact"] / r["un"] if r["un"] else 0
+            if vista_m == "General":
+                pie = split_html(por_canal_vals(Pm_, "total_pedido"))
+                extra = ""
+            else:
+                tot_m = P[P["marca"] == m]["total_pedido"].sum()
+                sh = r["fact"] / tot_m * 100 if tot_m else 0
+                col_c = COLOR_CANAL[vista_m]
+                pie = (f"<div class='split'><div style='width:{sh:.2f}%;background:{col_c}'></div></div>"
+                       f"<div class='split-legend'><span><span class='dot' style='background:{col_c}'></span>"
+                       f"{fmt_dec(sh, 0)}% de la venta de {m}</span></div>")
+                extra = ""
+                if vista_m == "MercadoLibre":
+                    com = Pm_["comision"].sum()
+                    extra = (f"<div class='row' title='Comisión cobrada por MercadoLibre'><span>Comisión</span>"
+                             f"<b style='color:#F87171'>{fmt_dec(com / r['fact'] * 100 if r['fact'] else 0)}%</b></div>")
             cols[j].markdown(
                 f"<div class='brand' style='--b-accent:{acc}'><div class='brand-name' style='color:{acc}'>{m}</div>"
                 f"<div class='brand-big'>{fmt_kpi(r['fact'])}</div>{delta_html(r['fact'], rp['fact'] if rp else None, cap='vs ant.')}"
@@ -744,7 +773,7 @@ with tab_res:
                 f"<div class='row' title='Average Order Value'><span>AOV</span><b>{fmt_ars(r['tkt'])}</b></div>"
                 f"<div class='row' title='Units per Transaction'><span>UPT</span><b>{fmt_dec(upt, 2)}</b></div>"
                 f"<div class='row' title='Average Selling Price'><span>ASP</span><b>{fmt_ars(asp)}</b></div>"
-                f"{split_html(por_canal_vals(Pm_, 'total_pedido'))}</div>", unsafe_allow_html=True)
+                f"{extra}{pie}</div>", unsafe_allow_html=True)
 
     # ---------- TENDENCIA ----------
     seccion("Evolución", "Tendencia de ventas", "Por día, o por hora si el período es un solo día.")
