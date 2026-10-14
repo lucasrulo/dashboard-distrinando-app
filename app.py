@@ -21,7 +21,7 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================================================================
 # 1. CONFIGURACIÓN
 # ==============================================================================
-st.set_page_config(page_title="Distrinando | Centro de datos", page_icon="📊",
+st.set_page_config(page_title="Distrinando | Centro de Comando", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
 REPO_DATOS = "lucasrulo/dashboard-distrinando"
@@ -459,6 +459,31 @@ def load_data():
     return df
 
 
+@st.cache_data(ttl=240, show_spinner=False)
+def estado_robot():
+    """Mira la última corrida del robot de ventas. GitHub no garantiza el cron de 5 min (a veces pasa horas
+    sin correr), así que si la última corrida tiene más de 10 min y no hay otra en curso, la dispara.
+    Está cacheado 4 min y compartido entre todos los usuarios: a lo sumo un disparo cada 4 min."""
+    tok = _gh_token()
+    if not tok:
+        return None
+    h = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
+    base = f"https://api.github.com/repos/{REPO_DATOS}/actions/workflows/{WORKFLOW_ID}"
+    try:
+        runs = requests.get(f"{base}/runs", params={"per_page": 5}, headers=h, timeout=10).json().get("workflow_runs", [])
+        if not runs:
+            return None
+        activo = any(x.get("status") in ("queued", "in_progress", "waiting", "pending", "requested") for x in runs)
+        ok = [x for x in runs if x.get("conclusion") == "success"]
+        ult_ok = pd.Timestamp(ok[0]["updated_at"]).tz_convert(ZONA_AR) if ok else None
+        disparado = False
+        if not activo and (pd.Timestamp.now(tz="UTC") - pd.Timestamp(runs[0]["created_at"])).total_seconds() > 600:
+            disparado = requests.post(f"{base}/dispatches", headers=h, json={"ref": "main"}, timeout=10).status_code == 204
+        return {"ult_ok": ult_ok, "activo": activo or disparado}
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_aux(nombre):
     """CSVs secundarios (catálogo, publicaciones, clientes). Si no existen todavía, vuelve vacío."""
@@ -609,7 +634,7 @@ def pantalla_login():
     </style>""")
     html("<div style='text-align:center;margin-bottom:22px'>"
          "<div style='font-family:Space Grotesk, sans-serif;font-size:30px;font-weight:700;letter-spacing:2px;color:#F8FAFC'>DISTRINANDO</div>"
-         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de datos</div></div>")
+         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de Comando</div></div>")
     usuarios = _usuarios()
     bloqueado_hasta = st.session_state.get("login_bloqueo", 0)
     with st.form("login", clear_on_submit=False):
@@ -699,6 +724,12 @@ with st.sidebar:
         txt = sub["fecha"].max().strftime("%d/%m %H:%M") + " hs" if not sub.empty else "sin datos"
         html(f"<div class='row'><span><span class='dot' style='background:{COLOR_CANAL[c]}'></span>{c}</span><b>{txt}</b></div>")
 
+    rb = estado_robot()
+    if rb and rb.get("ult_ok") is not None:
+        mins = int((ahora - rb["ult_ok"]).total_seconds() // 60)
+        hace = f"hace {mins} min" if mins < 120 else f"hace {mins // 60} h"
+        estado_txt = "<span class='chip' style='color:#FBBF24'>actualizando…</span>" if rb["activo"] else ""
+        html(f"<div class='row' style='margin-top:8px'><span>🔄 Datos actualizados {hace}</span>{estado_txt}</div>")
     st.write("")
     if st.button("Actualizar datos ahora", type="primary", width="stretch", icon=":material/sync:"):
         tok = _gh_token()
@@ -732,7 +763,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de datos</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
