@@ -9,6 +9,8 @@ import io
 import re
 import json
 import base64
+import hashlib
+import hmac
 import time
 import requests
 from collections import Counter
@@ -21,7 +23,6 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================================================================
 st.set_page_config(page_title="Distrinando | Centro de Comando", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
-st_autorefresh(interval=300000, limit=None, key="auto_refresh")
 
 REPO_DATOS = "lucasrulo/dashboard-distrinando"
 WORKFLOW_ID = "actualizador.yml"
@@ -57,6 +58,15 @@ PROVINCIAS_MAPA = {
     'santa fe': 'Santa Fe', 'santiago del estero': 'Santiago del Estero',
     'tierra del fuego': 'Tierra del Fuego', 'tdf': 'Tierra del Fuego', 'tucumán': 'Tucumán', 'tucuman': 'Tucumán'
 }
+ORDEN_ENVIO = ["Pendiente", "Listo para despachar", "Despachado", "En camino", "En reparto", "Listo para retirar",
+               "Intento fallido", "Entregado", "No entregado", "Devolución", "Cancelado"]
+COLOR_ENVIO = {"Pendiente": "#F87171", "Listo para despachar": "#FBBF24", "Despachado": "#38BDF8", "En camino": "#22D3EE",
+               "En reparto": "#A78BFA", "Listo para retirar": "#818CF8", "Intento fallido": "#F472B6", "Entregado": "#34D399",
+               "No entregado": "#EF4444", "Devolución": "#FB923C", "Cancelado": "#64748B"}
+ENV_PEND = {"Pendiente", "Listo para despachar"}
+ENV_CURSO = {"Despachado", "En camino", "En reparto", "Listo para retirar", "Intento fallido"}
+ENV_DESP = ENV_CURSO | {"Entregado", "No entregado", "Devolución"}
+ENV_PROB = {"Intento fallido", "No entregado", "Devolución"}
 ORDEN_CUOTAS = ["1 pago", "Débito", "2 cuotas", "3 cuotas", "4 cuotas", "6 cuotas", "9 cuotas", "12 cuotas", "18 cuotas"]
 SIN_DESCUENTO = {"SIN DESCUENTO", "", "NAN", "NONE"}
 
@@ -398,7 +408,7 @@ def load_data():
 
     textos = {"medio_pago": "DESCONOCIDO", "cuotas": "1 Cuota / Otro", "descuento": "SIN DESCUENTO",
               "provincia": "Buenos Aires", "tags": "", "url_web": "#", "fulfillment_status": "pending",
-              "sku": "S/D", "producto": "S/D", "cliente": ""}
+              "sku": "S/D", "producto": "S/D", "cliente": "", "envio_detalle": "", "transportista": "", "nro_pedido": ""}
     for c, default in textos.items():
         if c not in df.columns:
             df[c] = default
@@ -429,10 +439,22 @@ def load_data():
     df["medio_grupo"] = df["medio_pago"].map({v: norm_medio(v) for v in df["medio_pago"].unique()})
     df["cuotas_grupo"] = df["cuotas"].map({v: norm_cuotas(v) for v in df["cuotas"].unique()})
     df["estado"] = df["fulfillment_status"].str.lower().map(ESTADO_MAPA).fillna("Pendiente")
+    # Estado detallado del envío (si el extractor todavía no lo trae, se deduce del fulfillment)
+    deducido = df["fulfillment_status"].str.lower().map({"fulfilled": "Despachado", "partial": "Despachado",
+                                                         "restocked": "Devolución"}).fillna("Pendiente")
+    deducido = deducido.where(~((df["canal"] == "MercadoLibre") & (df["fulfillment_status"] == "unfulfilled")), "Cancelado")
+    if "envio_estado" in df.columns:
+        df["envio_estado"] = df["envio_estado"].fillna(deducido).replace("", np.nan).fillna(deducido)
+    else:
+        df["envio_estado"] = deducido
+    fe = df["fecha_entrega"] if "fecha_entrega" in df.columns else pd.Series(pd.NaT, index=df.index)
+    df["fecha_entrega"] = pd.to_datetime(fe, errors="coerce", format="mixed", utc=True).dt.tz_convert(ZONA_AR)
+    df["nro_pedido"] = df["nro_pedido"].where(df["nro_pedido"] != "", df["id_pedido"].astype(str))
     df["dia"] = df["fecha"].dt.date
     df["cantidad"] = df["cantidad"].astype("int32")
 
-    for c in ["marca", "canal", "medio_pago", "medio_grupo", "cuotas", "cuotas_grupo", "descuento", "provincia", "estado"]:
+    for c in ["marca", "canal", "medio_pago", "medio_grupo", "cuotas", "cuotas_grupo", "descuento", "provincia", "estado",
+              "envio_estado", "transportista"]:
         df[c] = df[c].astype("category")
     return df
 
@@ -447,7 +469,8 @@ def load_aux(nombre):
 
 
 COLS_PED = ["canal", "marca", "id_pedido", "fecha", "dia", "total_pedido", "es_reverso", "unidades", "medio_grupo",
-            "cuotas_grupo", "provincia", "estado", "fecha_despacho", "comision", "cliente"]
+            "cuotas_grupo", "provincia", "estado", "fecha_despacho", "comision", "cliente", "envio_estado", "envio_detalle",
+            "fecha_entrega", "transportista", "nro_pedido"]
 
 
 def a_pedidos(d):
@@ -459,6 +482,8 @@ def a_pedidos(d):
         es_reverso=("es_reverso", "max"), unidades=("cantidad", "sum"), medio_grupo=("medio_grupo", "first"),
         cuotas_grupo=("cuotas_grupo", "first"), provincia=("provincia", "first"), estado=("estado", "first"),
         fecha_despacho=("fecha_despacho", "first"), comision=("comision_meli", "sum"), cliente=("cliente", "first"),
+        envio_estado=("envio_estado", "first"), envio_detalle=("envio_detalle", "first"), fecha_entrega=("fecha_entrega", "first"),
+        transportista=("transportista", "first"), nro_pedido=("nro_pedido", "first"),
     ).reset_index()
 
 
@@ -562,7 +587,68 @@ def gauge(valor, objetivo, titulo, color, moneda=False):
 
 
 # ==============================================================================
-# 6. APP
+# 6. LOGIN (usuarios y contraseñas cifradas en los secrets de Streamlit)
+# ==============================================================================
+def _usuarios():
+    try:
+        return {k.lower(): dict(v) for k, v in st.secrets["usuarios"].items()}
+    except Exception:
+        return {}
+
+
+def _hash(usuario, clave):
+    return hashlib.pbkdf2_hmac("sha256", clave.encode(), ("distrinando:" + usuario.lower()).encode(), 200_000).hex()
+
+
+def pantalla_login():
+    html("""<style>
+      section[data-testid="stSidebar"], header[data-testid="stHeader"] { display:none; }
+      .block-container { max-width: 460px !important; padding-top: 9vh !important; }
+      div[data-testid="stForm"] { background: rgba(15,23,42,.72); border:1px solid rgba(148,163,184,.16);
+        border-radius:22px; padding: 26px 26px 18px; backdrop-filter: blur(10px); }
+    </style>""")
+    html("<div style='text-align:center;margin-bottom:22px'>"
+         "<div style='font-family:Space Grotesk, sans-serif;font-size:30px;font-weight:700;letter-spacing:2px;color:#F8FAFC'>DISTRINANDO</div>"
+         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de Comando</div></div>")
+    usuarios = _usuarios()
+    bloqueado_hasta = st.session_state.get("login_bloqueo", 0)
+    with st.form("login", clear_on_submit=False):
+        u = st.text_input("Usuario", placeholder="Tu usuario")
+        c = st.text_input("Contraseña", type="password", placeholder="••••••••")
+        ok = st.form_submit_button("Ingresar", type="primary", width="stretch", icon=":material/login:")
+    if not usuarios:
+        st.error("No hay usuarios configurados (falta la sección [usuarios] en los secrets de Streamlit).")
+        return
+    if ok:
+        if time.time() < bloqueado_hasta:
+            st.error(f"Demasiados intentos. Esperá {int(bloqueado_hasta - time.time())} segundos.")
+            return
+        datos = usuarios.get(u.strip().lower())
+        if datos and hmac.compare_digest(_hash(u.strip(), c), str(datos.get("hash", ""))):
+            st.session_state["auth"] = {"usuario": u.strip().lower(), "nombre": datos.get("nombre", u),
+                                        "rol": datos.get("rol", "usuario")}
+            st.session_state.pop("login_fallos", None)
+            st.rerun()
+        else:
+            fallos = st.session_state.get("login_fallos", 0) + 1
+            st.session_state["login_fallos"] = fallos
+            if fallos >= 5:
+                st.session_state["login_bloqueo"] = time.time() + 60
+                st.session_state["login_fallos"] = 0
+            st.error("Usuario o contraseña incorrectos.")
+
+
+if "auth" not in st.session_state:
+    pantalla_login()
+    st.stop()
+
+AUTH = st.session_state["auth"]
+ES_ADMIN = AUTH["rol"] == "admin"
+st_autorefresh(interval=300000, limit=None, key="auto_refresh")
+
+
+# ==============================================================================
+# 7. APP
 # ==============================================================================
 try:
     df_raw = load_data()
@@ -584,7 +670,7 @@ with st.sidebar:
     marcas_disp = sorted(map(str, df_raw["marca"].unique()))
     marcas_sel = st.multiselect("Marcas", marcas_disp, default=marcas_disp) or marcas_disp
 
-    periodo = st.segmented_control("Período", ["Hoy", "7D", "30D", "Todo", "Rango"], default="Todo", key="periodo") or "Todo"
+    periodo = st.segmented_control("Período", ["Hoy", "7D", "30D", "Todo", "Rango"], default="30D", key="periodo") or "30D"
     if periodo == "Hoy":
         d0, d1 = hoy, hoy
     elif periodo == "7D":
@@ -599,6 +685,13 @@ with st.sidebar:
         d0, d1 = f_min, hoy
     d0 = max(d0, f_min)
 
+    st.divider()
+    rol_txt = "Super admin" if ES_ADMIN else "Usuario"
+    html(f"<div class='row' style='margin-bottom:6px'><span>👤 <b style='color:#F8FAFC'>{AUTH['nombre']}</b></span>"
+         f"<span class='chip'>{rol_txt}</span></div>")
+    if st.button("Cerrar sesión", width="stretch", icon=":material/logout:"):
+        st.session_state.pop("auth", None)
+        st.rerun()
     st.divider()
     html("<div class='kpi-label' style='margin-bottom:8px'>Última venta registrada</div>")
     for c in CANALES:
@@ -639,7 +732,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de datos</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -647,10 +740,13 @@ if P.empty:
     st.info("No hay ventas para los filtros seleccionados.")
     st.stop()
 
-tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_cli, tab_ops = st.tabs([
-    ":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast", ":material/local_mall: Productos",
-    ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/group: Clientes",
-    ":material/local_shipping: Operaciones"])
+_tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast", ":material/local_mall: Productos",
+         ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/group: Clientes"]
+if ES_ADMIN:  # Operaciones (logística) solo para super admins
+    _tabs.append(":material/local_shipping: Operaciones")
+_t = st.tabs(_tabs)
+tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_cli = _t[:6]
+tab_ops = _t[6] if ES_ADMIN else None
 
 # ==============================================================================
 # TAB 1 · RESUMEN
@@ -864,31 +960,32 @@ with tab_metas:
             st.plotly_chart(gauge(Ps["unidades"].sum(), meta(objetivos, scope, marcas_alc, "unidades"), "Unidades",
                                   COLOR_SCOPE[scope]), width="stretch", key=f"g_un_{scope}")
 
-    with st.expander("Editar metas por marca y canal", icon=":material/edit:"):
-        st.caption("General = Tienda Online + MercadoLibre. Las metas se guardan en el repo de datos y no se pierden al reiniciar la app."
-                   + (" ⚠️ Todavía se están leyendo del archivo local: guardalas una vez para pasarlas al repo." if origen_obj != "repo" else ""))
-        marcas_ed = sorted(set(MARCAS_BASE) | set(marcas_disp))
-        ed = pd.DataFrame([{"Marca": m, "Canal": c,
-                            "Unidades": objetivos.get(c, {}).get(m, {}).get("unidades", 0),
-                            "Facturación ($)": objetivos.get(c, {}).get(m, {}).get("facturacion", 0)}
-                           for c in CANALES for m in marcas_ed])
-        ed_out = st.data_editor(ed, hide_index=True, width="stretch", key="editor_metas", column_config={
-            "Marca": st.column_config.TextColumn(disabled=True),
-            "Canal": st.column_config.TextColumn(disabled=True),
-            "Unidades": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
-            "Facturación ($)": st.column_config.NumberColumn(min_value=0, step=100000, format="$%d")})
-        if st.button("Guardar metas", type="primary", icon=":material/save:"):
-            nuevo = {c: {} for c in CANALES}
-            for _, row in ed_out.iterrows():
-                nuevo[row["Canal"]][row["Marca"]] = {"unidades": int(row["Unidades"] or 0),
-                                                     "facturacion": int(row["Facturación ($)"] or 0)}
-            ok, msg = guardar_objetivos(nuevo)
-            if ok:
-                load_objetivos.clear()
-                st.toast("Metas guardadas", icon="✅")
-                st.rerun()
-            else:
-                st.error(f"No se pudieron guardar: {msg}")
+    if ES_ADMIN:  # solo super admins editan metas
+        with st.expander("Editar metas por marca y canal", icon=":material/edit:"):
+            st.caption("General = Tienda Online + MercadoLibre. Las metas se guardan en el repo de datos y no se pierden al reiniciar la app."
+                       + (" ⚠️ Todavía se están leyendo del archivo local: guardalas una vez para pasarlas al repo." if origen_obj != "repo" else ""))
+            marcas_ed = sorted(set(MARCAS_BASE) | set(marcas_disp))
+            ed = pd.DataFrame([{"Marca": m, "Canal": c,
+                                "Unidades": objetivos.get(c, {}).get(m, {}).get("unidades", 0),
+                                "Facturación ($)": objetivos.get(c, {}).get(m, {}).get("facturacion", 0)}
+                               for c in CANALES for m in marcas_ed])
+            ed_out = st.data_editor(ed, hide_index=True, width="stretch", key="editor_metas", column_config={
+                "Marca": st.column_config.TextColumn(disabled=True),
+                "Canal": st.column_config.TextColumn(disabled=True),
+                "Unidades": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
+                "Facturación ($)": st.column_config.NumberColumn(min_value=0, step=100000, format="$%d")})
+            if st.button("Guardar metas", type="primary", icon=":material/save:"):
+                nuevo = {c: {} for c in CANALES}
+                for _, row in ed_out.iterrows():
+                    nuevo[row["Canal"]][row["Marca"]] = {"unidades": int(row["Unidades"] or 0),
+                                                         "facturacion": int(row["Facturación ($)"] or 0)}
+                ok, msg = guardar_objetivos(nuevo)
+                if ok:
+                    load_objetivos.clear()
+                    st.toast("Metas guardadas", icon="✅")
+                    st.rerun()
+                else:
+                    st.error(f"No se pudieron guardar: {msg}")
 
     # ---------- FORECAST ----------
     seccion("Proyección", "Forecast y análisis de brecha",
@@ -1142,8 +1239,18 @@ with tab_stock:
         pm = pm.merge(vi, left_on="item_id", right_index=True, how="left").fillna({"unidades": 0, "pedidos": 0})
         pm["visitas_30d"] = pd.to_numeric(pm["visitas_30d"], errors="coerce").fillna(0)
         pm["conv"] = np.where(pm["visitas_30d"] > 0, pm["pedidos"] / pm["visitas_30d"] * 100, np.nan)
-        stk_dep = cat.groupby(["marca", "modelo_color"])["stock"].sum().clip(lower=0) if not cat.empty else pd.Series(dtype=float)
-        pm = pm.merge(stk_dep.rename("stock_deposito"), left_on=["marca", "modelo_color"], right_index=True, how="left")
+        # Stock en depósito: por SKU exacto (hay marcas con una publicación por talle); si la publicación
+        # agrupa talles (SKU = modelo/color), se compara contra el total del modelo.
+        if not cat.empty:
+            cat_s = cat.copy()
+            cat_s["stock"] = pd.to_numeric(cat_s["stock"], errors="coerce").fillna(0).clip(lower=0)
+            por_sku = cat_s.groupby(["marca", "sku"])["stock"].sum()
+            por_mod = cat_s.groupby(["marca", "modelo_color"])["stock"].sum()
+            k_sku = list(zip(pm["marca"], pm["sku"].astype(str)))
+            k_mod = list(zip(pm["marca"], pm["modelo_color"].astype(str)))
+            pm["stock_deposito"] = [por_sku.get(a, por_mod.get(b, np.nan)) for a, b in zip(k_sku, k_mod)]
+        else:
+            pm["stock_deposito"] = np.nan
         act = pm[pm["estado"] == "active"]
         vis_tot, ped_tot = act["visitas_30d"].sum(), act["pedidos"].sum()
         k = st.columns(4)
@@ -1162,9 +1269,10 @@ with tab_stock:
             fig.update_layout(xaxis_title="Visitas (escala log)", yaxis_title="Unidades vendidas")
             st.plotly_chart(estilo(fig, 420), width="stretch")
         with g2:
-            umbral_vis = act["visitas_30d"].quantile(0.75) if len(act) else 0
-            conv_med = act.loc[act["visitas_30d"] > 0, "conv"].median() if len(act) else 0
-            opp = act[(act["visitas_30d"] >= umbral_vis) & (act["conv"].fillna(0) < (conv_med or 0) / 2)].sort_values("visitas_30d", ascending=False).head(12)
+            con_vis = act[act["visitas_30d"] > 0]
+            umbral_vis = con_vis["visitas_30d"].quantile(0.75) if len(con_vis) else 0
+            conv_med = (ped_tot / vis_tot * 100) if vis_tot else 0  # conversión promedio de la cuenta
+            opp = con_vis[(con_vis["visitas_30d"] >= umbral_vis) & (con_vis["conv"].fillna(0) < conv_med / 2)].sort_values("visitas_30d", ascending=False).head(12)
             filas = "".join(
                 f"<tr><td style='max-width:230px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:45]}</a></td>"
                 f"<td>{fmt_num(r['visitas_30d'])}</td><td>{fmt_num(r['pedidos'])}</td><td><span class='pill bad'>{fmt_dec(r['conv'] if pd.notna(r['conv']) else 0, 2)}%</span></td>"
@@ -1173,7 +1281,7 @@ with tab_stock:
             if filas:
                 html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>Visitas</th><th>Pedidos</th><th>Conv.</th><th>Precio</th></tr></thead>"
                      f"<tbody>{filas}</tbody></table></div>")
-                st.caption(f"Top 25% en visitas y menos de la mitad de la conversión mediana ({fmt_dec(conv_med or 0, 2)}%). Revisar precio, fotos y ficha.")
+                st.caption(f"Top 25% en visitas y menos de la mitad de la conversión promedio ({fmt_dec(conv_med or 0, 2)}%). Revisar precio, fotos y ficha.")
             else:
                 st.success("No hay publicaciones con ese problema.")
 
@@ -1190,11 +1298,13 @@ with tab_stock:
                 if dfp.empty:
                     st.success("Nada para revisar.")
                 else:
+                    motivo = {"out_of_stock": "sin stock", "paused_by_seller": "pausada a mano"}
                     filas = "".join(
-                        f"<tr><td style='max-width:240px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:42]}</a></td>"
-                        f"<td>{r['marca']}</td><td>{r['modelo_color']}</td><td>{fmt_num(r['stock'])}</td><td><span class='pill {cls}'>{fmt_num(r['stock_deposito'] if pd.notna(r['stock_deposito']) else 0)}</span></td></tr>"
+                        f"<tr><td style='max-width:220px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:38]}</a></td>"
+                        f"<td>{r['sku']}</td><td>{', '.join(motivo.get(x, x) for x in str(r.get('sub_estado') or '').split(',') if x and x != 'nan') or '—'}</td>"
+                        f"<td><span class='pill {cls}'>{fmt_num(r['stock_deposito'] if pd.notna(r['stock_deposito']) else 0)}</span></td></tr>"
                         for _, r in dfp.head(12).iterrows())
-                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>Marca</th><th>Código</th><th>Stock MeLi</th><th>Depósito</th></tr></thead>"
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Publicación</th><th>SKU</th><th>Motivo</th><th>Depósito</th></tr></thead>"
                          f"<tbody>{filas}</tbody></table></div>")
                     st.caption(nota)
 
@@ -1439,85 +1549,211 @@ with tab_cli:
 # ==============================================================================
 # TAB 5 · OPERACIONES
 # ==============================================================================
-with tab_ops:
-    sel_o = selector_canal("ops_canal")
-    Po = por_canal(P, sel_o)
-    if Po.empty:
-        st.info("Sin ventas para este canal.")
-    else:
-        env = Po[(Po["estado"] == "Enviado") & Po["fecha_despacho"].notna()].copy()
-        if not env.empty:
-            fc_ = np.array(env["fecha"].dt.date.tolist(), dtype="datetime64[D]")
-            fd_ = np.array(env["fecha_despacho"].dt.date.tolist(), dtype="datetime64[D]")
-            env["lt"] = np.maximum(np.busday_count(fc_, fd_), 0)
+def dias_habiles(desde, hasta):
+    a = np.array(pd.Series(desde).dt.date.tolist(), dtype="datetime64[D]")
+    b = np.array(pd.Series(hasta).dt.date.tolist(), dtype="datetime64[D]") if not isinstance(hasta, type(hoy)) else np.datetime64(hasta)
+    return np.maximum(np.busday_count(a, b), 0)
 
-        # ---------- LOGÍSTICA ----------
-        seccion("Logística", "Estado de despachos y eficiencia de depósito",
-            "Órdenes netas del período. SLA = días hábiles entre la compra y el despacho (excluye sábados y domingos).")
-        enviadas = Po[Po["estado"] == "Enviado"]
-        pend = Po[Po["estado"].isin(["En preparación", "Pendiente"])]
-        lt_prom = env["lt"].mean() if not env.empty else 0
-        pct_24 = (env["lt"] <= 1).mean() * 100 if not env.empty else 0
-        ck = st.columns(4)
-        ck[0].markdown(kpi_card("% enviadas", f"{fmt_dec(len(enviadas) / len(Po) * 100)}%", "",
-                                split_html(por_canal_vals(enviadas, "ords")), "#34D399", sm=True), unsafe_allow_html=True)
-        ck[1].markdown(kpi_card("Pendientes de despacho", fmt_num(len(pend)), "",
-                                split_html(por_canal_vals(pend, "ords")), "#FBBF24", sm=True), unsafe_allow_html=True)
-        ck[2].markdown(kpi_card("Lead time promedio", f"{fmt_dec(lt_prom, 2)} días háb.", "", "", "#A78BFA", sm=True),
-                       unsafe_allow_html=True)
-        ck[3].markdown(kpi_card("Despachadas ≤ 24 hs háb.", f"{fmt_dec(pct_24)}%", "", "", "#22D3EE", sm=True),
-                       unsafe_allow_html=True)
-        st.write("")
 
-        g1, g2 = st.columns(2)
-        with g1:
-            if sel_o == "Consolidado":
-                es = a_str(Po.groupby(["canal", "estado"], observed=True).size().rename("n").reset_index())
-                es["txt"] = es["n"].map(fmt_num)
-                fig = px.bar(es, x="canal", y="n", color="estado", color_discrete_map=COLOR_ESTADO, title="Estados de envío por canal",
-                             text="txt")
-                fig.update_traces(marker_line_width=0)
-                fig.update_layout(xaxis_title="", yaxis_title="Órdenes", bargap=0.4)
-            else:
-                es = a_str(Po.groupby("estado", observed=True).size().rename("n").reset_index())
-                fig = px.pie(es, values="n", names="estado", hole=0.62, color="estado", color_discrete_map=COLOR_ESTADO,
-                             title="Estados de envío")
-                fig.update_traces(textinfo="percent+label", marker=dict(line=dict(color="#060A13", width=2)))
-            st.plotly_chart(estilo(fig, 380), width="stretch")
-        with g2:
-            if env.empty:
-                st.info("No hay despachos con fecha registrada para calcular el SLA.")
-            else:
-                tramos = {0: "Mismo día", 1: "24 hs háb.", 2: "48 hs háb."}
-                env["tramo"] = env["lt"].map(lambda x: tramos.get(int(x), "+48 hs háb."))
-                orden_t = ["Mismo día", "24 hs háb.", "48 hs háb.", "+48 hs háb."]
-                sl = env.groupby(["canal", "tramo"], observed=True).size().rename("n").reset_index()
-                sl["pct"] = sl["n"] / sl.groupby("canal", observed=True)["n"].transform("sum") * 100
-                sl = a_str(sl)
-                fig = px.bar(sl, x="tramo", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
-                             category_orders={"tramo": orden_t}, text_auto=".0f", custom_data=["n"],
-                             title="Eficiencia de depósito (SLA) · % de órdenes despachadas")
-                fig.update_traces(marker_line_width=0, hovertemplate="%{x}<br>%{y:.1f}% · %{customdata[0]} órdenes<extra></extra>")
-                fig.update_layout(xaxis_title="", yaxis_title="% de órdenes", bargap=0.25)
+if tab_ops is not None:
+    with tab_ops:
+        sel_o = selector_canal("ops_canal")
+        Po = por_canal(P, sel_o)
+        if Po.empty:
+            st.info("Sin ventas para este canal.")
+        else:
+            Po = Po.copy()
+            Po["canal"] = Po["canal"].astype(str)
+            Po["envio_estado"] = Po["envio_estado"].astype(str)
+            canales_o = [c for c in CANALES if (Po["canal"] == c).any()]
+
+            # ---------- EMBUDO ----------
+            seccion("Envíos", "Embudo de envíos", f"Pedidos netos recibidos en el período ({rango_txt}) y en qué estado está cada uno hoy.")
+            rec = Po
+            pend = Po[Po["envio_estado"].isin(ENV_PEND)]
+            desp = Po[Po["envio_estado"].isin(ENV_DESP)]
+            curso = Po[Po["envio_estado"].isin(ENV_CURSO)]
+            entr = Po[Po["envio_estado"] == "Entregado"]
+            prob = Po[Po["envio_estado"].isin(ENV_PROB)]
+            n = len(rec)
+            pct = lambda a, b: f"{fmt_dec(a / b * 100 if b else 0)}%"
+            k = st.columns(6)
+            k[0].markdown(kpi_card("Recibidos", fmt_num(n), "<span class='delta flat'>pedidos netos</span>", split_html(por_canal_vals(rec, "ords")), "#22D3EE", sm=True), unsafe_allow_html=True)
+            k[1].markdown(kpi_card("Pendientes de despacho", fmt_num(len(pend)), f"<span class='delta down'>{pct(len(pend), n)} de recibidos</span>", split_html(por_canal_vals(pend, "ords")), "#F87171", sm=True), unsafe_allow_html=True)
+            k[2].markdown(kpi_card("Despachados", fmt_num(len(desp)), f"<span class='delta up'>{pct(len(desp), n)} de recibidos</span>", split_html(por_canal_vals(desp, "ords")), "#38BDF8", sm=True), unsafe_allow_html=True)
+            k[3].markdown(kpi_card("En camino", fmt_num(len(curso)), "<span class='delta flat'>despachados sin entregar</span>", split_html(por_canal_vals(curso, "ords")), "#A78BFA", sm=True), unsafe_allow_html=True)
+            k[4].markdown(kpi_card("Entregados", fmt_num(len(entr)), f"<span class='delta up'>{pct(len(entr), len(desp))} de despachados</span>", split_html(por_canal_vals(entr, "ords")), "#34D399", sm=True), unsafe_allow_html=True)
+            k[5].markdown(kpi_card("Con problemas", fmt_num(len(prob)), "<span class='delta down'>fallidos / no entregados / devolución</span>", split_html(por_canal_vals(prob, "ords")), "#F472B6", sm=True), unsafe_allow_html=True)
+            sin_entregas = [c for c in canales_o if not ((Po["canal"] == c) & (Po["envio_estado"] == "Entregado")).any()]
+            if sin_entregas:
+                st.caption(f"ℹ️ {', '.join(sin_entregas)}: todavía no hay entregas informadas. En Tienda Online la entrega solo se ve si el "
+                           "transportista actualiza el seguimiento en Shopify; si no, el pedido queda como 'Despachado'.")
+            st.write("")
+
+            g1, g2 = st.columns([1, 1.3])
+            with g1:
+                ee = Po.groupby(["canal", "envio_estado"]).size().rename("n").reset_index()
+                ee["pct"] = ee["n"] / ee.groupby("canal")["n"].transform("sum") * 100
+                fig = px.bar(ee, y="canal", x="pct", color="envio_estado", orientation="h", color_discrete_map=COLOR_ENVIO,
+                             category_orders={"envio_estado": ORDEN_ENVIO}, custom_data=["n", "envio_estado"],
+                             title="Estado actual de los pedidos (% por canal)")
+                fig.update_traces(marker_line_width=0, hovertemplate="%{customdata[1]}<br>%{x:.1f}% · %{customdata[0]} pedidos<extra></extra>")
+                fig.update_layout(xaxis_title="% de pedidos", yaxis_title="", bargap=0.35, legend=dict(y=-0.25))
+                st.plotly_chart(estilo(fig, 380), width="stretch")
+            with g2:
+                ini = max(d0, hoy - timedelta(days=44))
+                serie = []
+                r_ = Po[Po["dia"] >= ini].groupby("dia").size().rename("Recibidos")
+                d_ = Po[Po["fecha_despacho"].notna()].assign(d=lambda x: x["fecha_despacho"].dt.date)
+                d_ = d_[d_["d"] >= ini].groupby("d").size().rename("Despachados")
+                e_ = Po[Po["fecha_entrega"].notna()].assign(d=lambda x: x["fecha_entrega"].dt.date)
+                e_ = e_[e_["d"] >= ini].groupby("d").size().rename("Entregados")
+                flujo = pd.concat([r_, d_, e_], axis=1).fillna(0).sort_index()
+                flujo.index = pd.to_datetime(flujo.index)
+                flujo = flujo.reset_index().rename(columns={"index": "dia"}).melt(id_vars="dia", var_name="tipo", value_name="pedidos")
+                fig = px.line(flujo, x="dia", y="pedidos", color="tipo", markers=True, line_shape="spline",
+                              color_discrete_map={"Recibidos": "#22D3EE", "Despachados": "#FBBF24", "Entregados": "#34D399"},
+                              title="Recibidos vs. despachados vs. entregados por día")
+                fig.update_layout(xaxis_title="", yaxis_title="Pedidos", hovermode="x unified")
                 st.plotly_chart(estilo(fig, 380), width="stretch")
 
-        # ---------- GEO ----------
-        seccion("Geografía", "Distribución geográfica · TOP 10 provincias")
-        top_prov = Po.groupby("provincia", observed=True)["total_pedido"].sum().nlargest(10).index
-        gp = a_str(Po[Po["provincia"].isin(top_prov)].groupby(["provincia", "canal"], observed=True)
-                   .agg(fact=("total_pedido", "sum"), un=("unidades", "sum")).reset_index())
-        gp["txt_f"] = gp["fact"].map(fmt_compact)
-        gp["txt_u"] = gp["un"].map(fmt_num)
-        g1, g2 = st.columns(2)
-        with g1:
-            fig = px.bar(gp, x="fact", y="provincia", color="canal", orientation="h", color_discrete_map=COLOR_CANAL,
-                         title="Facturación por provincia", text="txt_f")
-            fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(categoryorder="total ascending"))
-            fig.update_traces(marker_line_width=0)
-            st.plotly_chart(estilo(fig, 420), width="stretch")
-        with g2:
-            fig = px.bar(gp, x="un", y="provincia", color="canal", orientation="h", color_discrete_map=COLOR_CANAL,
-                         title="Unidades por provincia", text="txt_u")
-            fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(categoryorder="total ascending"))
-            fig.update_traces(marker_line_width=0)
-            st.plotly_chart(estilo(fig, 420), width="stretch")
+            # ---------- PENDIENTES POR ANTIGÜEDAD ----------
+            seccion("Depósito", "Pendientes de despacho por antigüedad",
+                    "Pedidos que todavía no salieron, según días hábiles desde la compra (excluye sábados y domingos).")
+            if pend.empty:
+                st.success("No hay pedidos pendientes de despacho. 🎉")
+            else:
+                pend = pend.copy()
+                pend["dias_hab"] = dias_habiles(pend["fecha"], hoy)
+                tramos = [("Hoy", 0, 0, "#34D399"), ("1 día háb.", 1, 1, "#FBBF24"), ("2 días háb.", 2, 2, "#FB923C"),
+                          ("3 a 5 días háb.", 3, 5, "#F87171"), ("+5 días háb.", 6, 10**6, "#EF4444")]
+                k = st.columns(len(tramos))
+                for col, (lbl, lo, hi, colr) in zip(k, tramos):
+                    sub = pend[(pend["dias_hab"] >= lo) & (pend["dias_hab"] <= hi)]
+                    col.markdown(kpi_card(lbl, fmt_num(len(sub)), "", split_html(por_canal_vals(sub, "ords")), colr, sm=True), unsafe_allow_html=True)
+                st.write("")
+                viejos = pend.sort_values(["dias_hab", "fecha"], ascending=[False, True])
+                filas = ""
+                for _, r in viejos.head(30).iterrows():
+                    dh = int(r["dias_hab"])
+                    cls = "ok" if dh == 0 else ("warn" if dh <= 2 else "bad")
+                    filas += (f"<tr><td class='strong'>{r['nro_pedido']}</td>"
+                              f"<td><span class='dot' style='background:{COLOR_CANAL.get(r['canal'], '#94A3B8')}'></span>{CORTO.get(r['canal'], r['canal'])}</td>"
+                              f"<td>{r['marca']}</td><td>{r['fecha']:%d/%m %H:%M}</td><td><span class='pill {cls}'>{dh} días háb.</span></td>"
+                              f"<td>{r['envio_estado']}</td><td>{r['provincia']}</td><td>{fmt_num(r['unidades'])}</td><td>{fmt_ars(r['total_pedido'])}</td></tr>")
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Pedido</th><th>Canal</th><th>Marca</th><th>Compra</th>"
+                     "<th>Esperando</th><th>Estado</th><th>Provincia</th><th>Unid.</th><th>Total</th></tr></thead>"
+                     f"<tbody>{filas}</tbody></table></div>")
+                exp = viejos[["nro_pedido", "canal", "marca", "fecha", "dias_hab", "envio_estado", "envio_detalle", "provincia", "unidades", "total_pedido"]].copy()
+                exp["fecha"] = exp["fecha"].dt.strftime("%d/%m/%Y %H:%M")
+                st.caption(f"Los 30 más atrasados de {fmt_num(len(pend))} pendientes.")
+                st.download_button("Descargar todos los pendientes (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"),
+                                   file_name="pendientes_despacho.csv", mime="text/csv", icon=":material/download:")
+
+            # ---------- TIEMPOS ----------
+            seccion("Tiempos", "Tiempos de despacho y de entrega",
+                    "Despacho = días hábiles de la compra a la salida. Tránsito = días corridos de la salida a la entrega.")
+            env = Po[Po["envio_estado"].isin(ENV_DESP) & Po["fecha_despacho"].notna()].copy()
+            if not env.empty:
+                env["lt"] = dias_habiles(env["fecha"], env["fecha_despacho"])
+            ent_t = Po[(Po["envio_estado"] == "Entregado") & Po["fecha_entrega"].notna()].copy()
+            if not ent_t.empty:
+                ent_t["total_d"] = (ent_t["fecha_entrega"] - ent_t["fecha"]).dt.total_seconds() / 86400
+                ent_t["transito_d"] = np.where(ent_t["fecha_despacho"].notna(),
+                                               (ent_t["fecha_entrega"] - ent_t["fecha_despacho"]).dt.total_seconds() / 86400, np.nan)
+            filas = ""
+            for c in canales_o:
+                e_c = env[env["canal"] == c] if not env.empty else env
+                t_c = ent_t[ent_t["canal"] == c] if not ent_t.empty else ent_t
+                filas += (f"<tr><td class='strong'><span class='dot' style='background:{COLOR_CANAL[c]}'></span>{c}</td>"
+                          f"<td>{fmt_dec(e_c['lt'].mean(), 2) if len(e_c) else '—'}</td>"
+                          f"<td>{(fmt_dec((e_c['lt'] <= 1).mean() * 100) + '%') if len(e_c) else '—'}</td>"
+                          f"<td>{fmt_dec(t_c['transito_d'].mean(), 1) if len(t_c) and t_c['transito_d'].notna().any() else '—'}</td>"
+                          f"<td>{fmt_dec(t_c['total_d'].mean(), 1) if len(t_c) else '—'}</td>"
+                          f"<td>{fmt_dec(t_c['total_d'].quantile(0.9), 1) if len(t_c) else '—'}</td>"
+                          f"<td>{fmt_num(len(t_c))}</td></tr>")
+            html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Canal</th><th>Despacho prom. (días háb.)</th><th>Despachados ≤ 24 hs háb.</th>"
+                 "<th>Tránsito prom. (días)</th><th>Compra → entrega prom. (días)</th><th>Compra → entrega (90% de los pedidos)</th><th>Entregas medidas</th></tr></thead>"
+                 f"<tbody>{filas}</tbody></table></div>")
+            st.write("")
+            g1, g2 = st.columns(2)
+            with g1:
+                if env.empty:
+                    st.info("No hay despachos con fecha registrada para calcular el SLA.")
+                else:
+                    tr = {0: "Mismo día", 1: "24 hs háb.", 2: "48 hs háb."}
+                    env["tramo"] = env["lt"].map(lambda x: tr.get(int(x), "+48 hs háb."))
+                    sl = env.groupby(["canal", "tramo"]).size().rename("n").reset_index()
+                    sl["pct"] = sl["n"] / sl.groupby("canal")["n"].transform("sum") * 100
+                    fig = px.bar(sl, x="tramo", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
+                                 category_orders={"tramo": ["Mismo día", "24 hs háb.", "48 hs háb.", "+48 hs háb."]},
+                                 text=sl["pct"].map(lambda v: fmt_dec(v, 0) + "%"), custom_data=["n"],
+                                 title="Eficiencia de depósito (SLA de despacho)")
+                    fig.update_traces(marker_line_width=0, hovertemplate="%{x}<br>%{y:.1f}% · %{customdata[0]} pedidos<extra></extra>")
+                    fig.update_layout(xaxis_title="", yaxis_title="% de despachados", bargap=0.25)
+                    st.plotly_chart(estilo(fig, 360), width="stretch")
+            with g2:
+                if ent_t.empty:
+                    st.info("Todavía no hay entregas con fecha informada para medir el tiempo de entrega.")
+                else:
+                    ent_t["dias_ent"] = np.minimum(np.floor(ent_t["total_d"]).astype(int), 10)
+                    he = ent_t.groupby(["canal", "dias_ent"]).size().rename("n").reset_index()
+                    he["pct"] = he["n"] / he.groupby("canal")["n"].transform("sum") * 100
+                    he["lbl"] = he["dias_ent"].map(lambda d: "10+" if d >= 10 else str(d))
+                    fig = px.bar(he, x="lbl", y="pct", color="canal", barmode="group", color_discrete_map=COLOR_CANAL,
+                                 category_orders={"lbl": [str(i) for i in range(10)] + ["10+"]}, custom_data=["n"],
+                                 title="Días desde la compra hasta la entrega")
+                    fig.update_traces(marker_line_width=0, hovertemplate="%{x} días<br>%{y:.1f}% · %{customdata[0]} pedidos<extra></extra>")
+                    fig.update_layout(xaxis_title="Días corridos", yaxis_title="% de entregados", bargap=0.2)
+                    st.plotly_chart(estilo(fig, 360), width="stretch")
+
+            # ---------- TRANSPORTISTAS ----------
+            tp = desp.copy()
+            tp["transportista"] = tp["transportista"].astype(str).replace({"": "Sin informar", "nan": "Sin informar"})
+            if tp["transportista"].nunique() > 1 or (tp["transportista"] != "Sin informar").any():
+                seccion("Transportistas", "Rendimiento por transportista", "Pedidos despachados en el período.")
+                ag = tp.groupby("transportista").agg(desp=("id_pedido", "count"),
+                                                     entregados=("envio_estado", lambda s: (s == "Entregado").sum()),
+                                                     problemas=("envio_estado", lambda s: s.isin(ENV_PROB).sum())).sort_values("desp", ascending=False)
+                if not ent_t.empty:
+                    ag = ag.join(ent_t.assign(transportista=ent_t["transportista"].astype(str).replace({"": "Sin informar", "nan": "Sin informar"}))
+                                 .groupby("transportista")["total_d"].mean().rename("dias"), how="left")
+                else:
+                    ag["dias"] = np.nan
+                filas = "".join(f"<tr><td class='strong'>{t}</td><td>{fmt_num(r['desp'])}</td><td>{fmt_num(r['entregados'])}</td>"
+                                f"<td>{fmt_dec(r['entregados'] / r['desp'] * 100 if r['desp'] else 0)}%</td><td>{fmt_num(r['problemas'])}</td>"
+                                f"<td>{fmt_dec(r['dias'], 1) if pd.notna(r['dias']) else '—'}</td></tr>" for t, r in ag.head(12).iterrows())
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Transportista</th><th>Despachados</th><th>Entregados</th>"
+                     f"<th>% entregado</th><th>Con problemas</th><th>Compra → entrega (días)</th></tr></thead><tbody>{filas}</tbody></table></div>")
+
+            # ---------- PROBLEMAS ----------
+            if not prob.empty:
+                seccion("Seguimiento", f"Envíos con problemas ({fmt_num(len(prob))})", "Intentos de entrega fallidos, no entregados y devoluciones.")
+                filas = "".join(
+                    f"<tr><td class='strong'>{r['nro_pedido']}</td><td>{CORTO.get(r['canal'], r['canal'])}</td><td>{r['marca']}</td>"
+                    f"<td>{r['fecha']:%d/%m}</td><td><span class='pill bad'>{r['envio_estado']}</span></td><td>{r['envio_detalle']}</td>"
+                    f"<td>{r['provincia']}</td><td>{fmt_ars(r['total_pedido'])}</td></tr>"
+                    for _, r in prob.sort_values("fecha", ascending=False).head(30).iterrows())
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Pedido</th><th>Canal</th><th>Marca</th><th>Compra</th>"
+                     f"<th>Estado</th><th>Detalle</th><th>Provincia</th><th>Total</th></tr></thead><tbody>{filas}</tbody></table></div>")
+
+            # ---------- GEO ----------
+            seccion("Geografía", "Distribución geográfica · TOP 10 provincias")
+            top_prov = Po.groupby("provincia", observed=True)["total_pedido"].sum().nlargest(10).index
+            gp = a_str(Po[Po["provincia"].isin(top_prov)].groupby(["provincia", "canal"], observed=True)
+                       .agg(fact=("total_pedido", "sum"), un=("unidades", "sum")).reset_index())
+            gp["txt_f"] = gp["fact"].map(fmt_compact)
+            gp["txt_u"] = gp["un"].map(fmt_num)
+            g1, g2 = st.columns(2)
+            with g1:
+                fig = px.bar(gp, x="fact", y="provincia", color="canal", orientation="h", color_discrete_map=COLOR_CANAL,
+                             title="Facturación por provincia", text="txt_f")
+                fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(categoryorder="total ascending"))
+                fig.update_traces(marker_line_width=0)
+                st.plotly_chart(estilo(fig, 420), width="stretch")
+            with g2:
+                fig = px.bar(gp, x="un", y="provincia", color="canal", orientation="h", color_discrete_map=COLOR_CANAL,
+                             title="Unidades por provincia", text="txt_u")
+                fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(categoryorder="total ascending"))
+                fig.update_traces(marker_line_width=0)
+                st.plotly_chart(estilo(fig, 420), width="stretch")
