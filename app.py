@@ -21,7 +21,7 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================================================================
 # 1. CONFIGURACIÓN
 # ==============================================================================
-st.set_page_config(page_title="Distrinando | Centro de datos", page_icon="📊",
+st.set_page_config(page_title="Distrinando | Centro de Comando", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
 REPO_DATOS = "lucasrulo/dashboard-distrinando"
@@ -634,7 +634,7 @@ def pantalla_login():
     </style>""")
     html("<div style='text-align:center;margin-bottom:22px'>"
          "<div style='font-family:Space Grotesk, sans-serif;font-size:30px;font-weight:700;letter-spacing:2px;color:#F8FAFC'>DISTRINANDO</div>"
-         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de datos</div></div>")
+         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de Comando</div></div>")
     usuarios = _usuarios()
     bloqueado_hasta = st.session_state.get("login_bloqueo", 0)
     with st.form("login", clear_on_submit=False):
@@ -763,7 +763,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de datos</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -772,12 +772,13 @@ if P.empty:
     st.stop()
 
 _tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast", ":material/local_mall: Productos",
-         ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/group: Clientes"]
+         ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/campaign: Publicidad MeLi",
+         ":material/group: Clientes"]
 if ES_ADMIN:  # Operaciones (logística) solo para super admins
     _tabs.append(":material/local_shipping: Operaciones")
 _t = st.tabs(_tabs)
-tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_cli = _t[:6]
-tab_ops = _t[6] if ES_ADMIN else None
+tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_ads, tab_cli = _t[:7]
+tab_ops = _t[7] if ES_ADMIN else None
 
 # ==============================================================================
 # TAB 1 · RESUMEN
@@ -1468,6 +1469,306 @@ with tab_com:
                 st.plotly_chart(estilo(fig, 380), width="stretch")
             if sin_cuotas:
                 st.caption(f"ℹ️ {', '.join(sin_cuotas)}: el pedido no trae la cantidad de cuotas, por eso no aparece en estos gráficos.")
+
+# ==============================================================================
+# TAB · PUBLICIDAD MELI (Product Ads)
+# ==============================================================================
+def _pct_norm(s):
+    """Las participaciones pueden venir 0-1 o 0-100: se normaliza a 0-100."""
+    s = pd.to_numeric(s, errors="coerce")
+    return s * 100 if s.dropna().le(1).all() else s
+
+
+def _ads_kpis(d):
+    t = {k: float(pd.to_numeric(d.get(k, pd.Series(dtype=float)), errors="coerce").sum()) for k in
+         ["cost", "prints", "clicks", "total_amount", "direct_amount", "indirect_amount", "units_quantity",
+          "direct_units_quantity", "indirect_units_quantity", "organic_units_quantity", "organic_units_amount"]}
+    t["roas"] = t["total_amount"] / t["cost"] if t["cost"] else 0
+    t["acos"] = t["cost"] / t["total_amount"] * 100 if t["total_amount"] else 0
+    t["ctr"] = t["clicks"] / t["prints"] * 100 if t["prints"] else 0
+    t["cpc"] = t["cost"] / t["clicks"] if t["clicks"] else 0
+    t["cpm"] = t["cost"] / t["prints"] * 1000 if t["prints"] else 0
+    t["cvr"] = t["units_quantity"] / t["clicks"] * 100 if t["clicks"] else 0
+    return t
+
+
+with tab_ads:
+    a_camp = load_aux("meli_ads_campanias.csv")
+    a_dia = load_aux("meli_ads_diario.csv")
+    a_items = load_aux("meli_ads_items.csv")
+    if a_dia.empty and a_items.empty:
+        st.info("Todavía no hay datos de publicidad. Se generan con el workflow diario (Publicidad de MercadoLibre). "
+                "Si el log muestra error 403, hay que habilitar el permiso de 'Publicidad' en la app de MeLi.")
+    else:
+        a_dia = a_dia[a_dia["marca"].isin(marcas_sel)].copy()
+        a_dia["dia"] = pd.to_datetime(a_dia["fecha"]).dt.date
+        a_camp = a_camp[a_camp["marca"].isin(marcas_sel)].copy() if not a_camp.empty else a_camp
+        nombres_c = dict(zip(a_camp["campaign_id"], a_camp["nombre"])) if not a_camp.empty else {}
+        f_ads_min, f_ads_max = a_dia["dia"].min(), a_dia["dia"].max()
+        a0, a1 = max(d0, f_ads_min), min(d1, f_ads_max)
+        if a0 > a1:
+            a0, a1 = max(f_ads_min, f_ads_max - timedelta(days=29)), f_ads_max
+        nd = (a1 - a0).days + 1
+        pa0, pa1 = a0 - timedelta(days=nd), a0 - timedelta(days=1)
+
+        c1, c2 = st.columns([2.2, 1])
+        with c1:
+            camp_opts = sorted(a_dia["campaign_id"].unique(), key=lambda x: str(nombres_c.get(x, x)))
+            camp_sel = st.multiselect("Campañas", camp_opts, default=camp_opts, key="ads_camps",
+                                      format_func=lambda x: str(nombres_c.get(x, x))) or camp_opts
+        with c2:
+            html(f"<div class='hero-sub' style='margin-top:30px'>📅 <b>{a0:%d/%m} → {a1:%d/%m/%Y}</b> · "
+                 f"MeLi consolida la publicidad 1 vez por día (datos hasta {f_ads_max:%d/%m}).</div>")
+        dsel = a_dia[a_dia["campaign_id"].isin(camp_sel)]
+        cur = dsel[(dsel["dia"] >= a0) & (dsel["dia"] <= a1)]
+        prv = dsel[(dsel["dia"] >= pa0) & (dsel["dia"] <= pa1)]
+        k, kp = _ads_kpis(cur), _ads_kpis(prv)
+        hay_prev_ads = (not prv.empty) and pa0 >= f_ads_min
+        pv = (lambda x: kp[x]) if hay_prev_ads else (lambda x: None)
+        # Venta total MeLi del período (para TACOS y % atribuido a publicidad)
+        def _venta_meli(x0, x1):
+            b = base_net[(base_net["canal"] == "MercadoLibre") & (base_net["dia"] >= x0) & (base_net["dia"] <= x1)]
+            pp = a_pedidos(b)
+            return float(pp["total_pedido"].sum()) if len(pp) else 0.0, float(pp["unidades"].sum()) if len(pp) else 0.0
+        vm, um = _venta_meli(a0, a1)
+        vm_p, _ = _venta_meli(pa0, pa1) if hay_prev_ads else (0, 0)
+        tacos = k["cost"] / vm * 100 if vm else 0
+        tacos_p = kp["cost"] / vm_p * 100 if vm_p else None
+
+        # ---------- KPIs ----------
+        seccion("Mercado Ads", "Rendimiento de la inversión", f"Product Ads de MercadoLibre · comparado con los {nd} días anteriores.")
+        cc = st.columns(6)
+        cc[0].markdown(kpi_card("Inversión", fmt_kpi(k["cost"]), delta_html(k["cost"], pv("cost")), "", "#F472B6", sm=True), unsafe_allow_html=True)
+        cc[1].markdown(kpi_card("Ventas por publicidad", fmt_kpi(k["total_amount"]), delta_html(k["total_amount"], pv("total_amount")),
+                                f"<div class='split-legend' style='margin-top:10px'><span>Directas {fmt_compact(k['direct_amount'])}</span><span>Indirectas {fmt_compact(k['indirect_amount'])}</span></div>",
+                                "#34D399", sm=True), unsafe_allow_html=True)
+        cc[2].markdown(kpi_card("ROAS", f"{fmt_dec(k['roas'], 1)}x", delta_html(k["roas"], pv("roas")), "<div class='split-legend' style='margin-top:10px'><span>$ vendidos por $1 invertido</span></div>", "#22D3EE", sm=True), unsafe_allow_html=True)
+        cc[3].markdown(kpi_card("ACOS", f"{fmt_dec(k['acos'])}%", delta_html(k["acos"], pv("acos"), invert=True, pp=True), "<div class='split-legend' style='margin-top:10px'><span>inversión / ventas por ads</span></div>", "#FBBF24", sm=True), unsafe_allow_html=True)
+        cc[4].markdown(kpi_card("TACOS", f"{fmt_dec(tacos)}%", delta_html(tacos, tacos_p, invert=True, pp=True), "<div class='split-legend' style='margin-top:10px'><span>inversión / venta total MeLi</span></div>", "#A78BFA", sm=True), unsafe_allow_html=True)
+        cc[5].markdown(kpi_card("Venta MeLi por ads", f"{fmt_dec(k['total_amount'] / vm * 100 if vm else 0)}%", "", "<div class='split-legend' style='margin-top:10px'><span>del total vendido en MeLi</span></div>", "#FFE600", sm=True), unsafe_allow_html=True)
+        st.write("")
+        cc = st.columns(6)
+        cc[0].markdown(kpi_card("Impresiones", fmt_compact(k["prints"], False), delta_html(k["prints"], pv("prints")), "", "#38BDF8", sm=True), unsafe_allow_html=True)
+        cc[1].markdown(kpi_card("Clics", fmt_num(k["clicks"]), delta_html(k["clicks"], pv("clicks")), "", "#38BDF8", sm=True), unsafe_allow_html=True)
+        cc[2].markdown(kpi_card("CTR", f"{fmt_dec(k['ctr'], 2)}%", delta_html(k["ctr"], pv("ctr"), pp=True), "", "#38BDF8", sm=True), unsafe_allow_html=True)
+        cc[3].markdown(kpi_card("CPC", fmt_ars(k["cpc"]), delta_html(k["cpc"], pv("cpc"), invert=True), "", "#38BDF8", sm=True), unsafe_allow_html=True)
+        cc[4].markdown(kpi_card("Conversión (CVR)", f"{fmt_dec(k['cvr'], 2)}%", delta_html(k["cvr"], pv("cvr"), pp=True), "<div class='split-legend' style='margin-top:10px'><span>unidades / clics</span></div>", "#38BDF8", sm=True), unsafe_allow_html=True)
+        cc[5].markdown(kpi_card("Unidades por ads", fmt_num(k["units_quantity"]), delta_html(k["units_quantity"], pv("units_quantity")),
+                                f"<div class='split-legend' style='margin-top:10px'><span>CPM {fmt_ars(k['cpm'])}</span><span>orgánicas {fmt_num(k['organic_units_quantity'])}</span></div>", "#38BDF8", sm=True), unsafe_allow_html=True)
+
+        # ---------- TENDENCIA + EMBUDO ----------
+        from plotly.subplots import make_subplots
+        g1, g2 = st.columns([1.7, 1])
+        with g1:
+            td = cur.groupby("dia")[["cost", "total_amount"]].sum().reset_index()
+            td["acos"] = np.where(td["total_amount"] > 0, td["cost"] / td["total_amount"] * 100, np.nan)
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_bar(x=td["dia"], y=td["cost"], name="Inversión", marker_color="#F472B6", opacity=0.85)
+            fig.add_scatter(x=td["dia"], y=td["total_amount"], name="Ventas por ads", line=dict(color="#34D399", width=2.5, shape="spline"))
+            fig.add_scatter(x=td["dia"], y=td["acos"], name="ACOS %", line=dict(color="#FBBF24", width=2, dash="dot"), secondary_y=True)
+            fig.update_layout(title="Inversión, ventas y ACOS por día", hovermode="x unified", bargap=0.3)
+            fig.update_yaxes(title_text="$", secondary_y=False)
+            fig.update_yaxes(title_text="ACOS", secondary_y=True, showgrid=False, ticksuffix="%", tickformat=".1f", rangemode="tozero")
+            st.plotly_chart(estilo(fig, 400), width="stretch")
+        with g2:
+            fig = go.Figure(go.Funnel(y=["Impresiones", "Clics", "Unidades vendidas"],
+                                      x=[k["prints"], k["clicks"], k["units_quantity"]], textinfo="text+percent previous",
+                                      text=[fmt_compact(k["prints"], moneda=False), fmt_num(k["clicks"]), fmt_num(k["units_quantity"])],
+                                      marker=dict(color=["#38BDF8", "#A78BFA", "#34D399"]),
+                                      connector=dict(line=dict(color="rgba(148,163,184,.25)"))))
+            fig.update_layout(title="Embudo publicitario")
+            st.plotly_chart(estilo(fig, 400), width="stretch")
+
+        # ---------- POR MARCA ----------
+        bm = cur.groupby("marca")[["cost", "total_amount", "direct_amount", "indirect_amount", "clicks", "prints", "units_quantity"]].sum()
+        bm["acos"] = np.where(bm["total_amount"] > 0, bm["cost"] / bm["total_amount"] * 100, 0)
+        vm_marca = a_pedidos(base_net[(base_net["canal"] == "MercadoLibre") & (base_net["dia"] >= a0) & (base_net["dia"] <= a1)])
+        vm_marca = vm_marca.groupby("marca", observed=True)["total_pedido"].sum() if len(vm_marca) else pd.Series(dtype=float)
+        vm_marca.index = vm_marca.index.astype(str)
+        bm["tacos"] = [bm.loc[m, "cost"] / vm_marca.get(m, 0) * 100 if vm_marca.get(m, 0) else 0 for m in bm.index]
+        bm = bm.reset_index()
+        g1, g2 = st.columns(2)
+        with g1:
+            mm = bm.melt(id_vars="marca", value_vars=["cost", "direct_amount", "indirect_amount"], var_name="tipo", value_name="monto")
+            mm["tipo"] = mm["tipo"].map({"cost": "Inversión", "direct_amount": "Venta directa", "indirect_amount": "Venta indirecta"})
+            mm["txt"] = mm["monto"].map(fmt_compact)
+            fig = px.bar(mm, x="marca", y="monto", color="tipo", barmode="group", text="txt", title="Inversión vs. ventas por marca",
+                         color_discrete_map={"Inversión": "#F472B6", "Venta directa": "#34D399", "Venta indirecta": "#22D3EE"})
+            fig.update_traces(marker_line_width=0)
+            fig.update_layout(xaxis_title="", yaxis_title="", bargap=0.25)
+            st.plotly_chart(estilo(fig, 380), width="stretch")
+        with g2:
+            ml = bm.melt(id_vars="marca", value_vars=["acos", "tacos"], var_name="m", value_name="pct")
+            ml["m"] = ml["m"].str.upper()
+            fig = px.bar(ml, x="marca", y="pct", color="m", barmode="group", text=ml["pct"].map(lambda v: fmt_dec(v) + "%"),
+                         color_discrete_map={"ACOS": "#FBBF24", "TACOS": "#A78BFA"}, title="ACOS y TACOS por marca")
+            fig.update_traces(marker_line_width=0)
+            fig.update_layout(xaxis_title="", yaxis_title="%", bargap=0.3)
+            st.plotly_chart(estilo(fig, 380), width="stretch")
+
+        # ---------- CAMPAÑAS ----------
+        seccion("Campañas", "Rendimiento y salud de cada campaña",
+                "Participación de impresiones y pérdidas son de los últimos 30 días. La recomendación cruza ACOS real vs. objetivo y por qué se pierden impresiones.")
+        cm = cur.groupby("campaign_id")[["cost", "total_amount", "clicks", "prints", "units_quantity"]].sum()
+        if not a_camp.empty:
+            cm = a_camp.set_index("campaign_id").join(cm, how="left").fillna({"cost": 0, "total_amount": 0, "clicks": 0, "prints": 0, "units_quantity": 0})
+            cm = cm[cm.index.isin(camp_sel)]
+            for c_ in ["is_impression_share", "is_top_impression_share", "is_lost_impression_share_by_budget", "is_lost_impression_share_by_ad_rank"]:
+                cm[c_] = _pct_norm(cm[c_]) if c_ in cm.columns else np.nan
+            cm = cm.sort_values("cost", ascending=False)
+            filas = ""
+            for cid, r in cm.iterrows():
+                acos_r = r["cost"] / r["total_amount"] * 100 if r["total_amount"] else np.nan
+                obj = pd.to_numeric(r.get("acos_objetivo"), errors="coerce")
+                lb, lr = r.get("is_lost_impression_share_by_budget"), r.get("is_lost_impression_share_by_ad_rank")
+                if str(r.get("estado")) != "active":
+                    rec, cls = "Pausada", "warn"
+                elif pd.notna(acos_r) and pd.notna(obj) and acos_r > obj * 1.2:
+                    rec, cls = "🔻 ACOS sobre objetivo: revisar anuncios que gastan sin vender", "bad"
+                elif pd.notna(lb) and lb >= 20 and (pd.isna(obj) or pd.isna(acos_r) or acos_r <= obj):
+                    rec, cls = f"⬆️ Subir presupuesto: pierde {fmt_dec(lb, 0)}% de impresiones con ACOS sano", "ok"
+                elif pd.notna(lr) and lr >= 30:
+                    rec, cls = f"🎯 Pierde {fmt_dec(lr, 0)}% por ranking: mejorar precio/publicación o subir ACOS objetivo", "warn"
+                elif r["cost"] > 0 and r["total_amount"] == 0:
+                    rec, cls = "⚪ Gasta sin ventas", "bad"
+                else:
+                    rec, cls = "✅ Mantener", "ok"
+                est_cls = "ok" if r.get("estado") == "active" else "warn"
+                fpct = lambda v: f"{fmt_dec(v, 0)}%" if pd.notna(v) else "—"
+                filas += (f"<tr><td class='strong' style='text-align:left'><span class='dot' style='background:{PALETA_MARCAS.get(r['marca'], '#94A3B8')}'></span>{r['nombre']}</td>"
+                          f"<td style='text-align:left;white-space:normal;min-width:230px'><span class='pill {cls}'>{rec}</span></td>"
+                          f"<td><span class='pill {est_cls}'>{r.get('estado', '')}</span></td><td>{str(r.get('estrategia', '')).title()}</td>"
+                          f"<td>{fmt_ars(pd.to_numeric(r.get('presupuesto'), errors='coerce') or 0)}</td>"
+                          f"<td>{fpct(obj)}</td><td class='strong'>{fpct(acos_r)}</td>"
+                          f"<td>{fmt_dec(r['total_amount'] / r['cost'], 1) + 'x' if r['cost'] else '—'}</td>"
+                          f"<td>{fmt_ars(r['cost'])}</td><td>{fmt_ars(r['total_amount'])}</td>"
+                          f"<td>{fmt_dec(r['clicks'] / r['prints'] * 100, 2) + '%' if r['prints'] else '—'}</td>"
+                          f"<td>{fmt_ars(r['cost'] / r['clicks']) if r['clicks'] else '—'}</td>"
+                          f"<td>{fmt_dec(r['units_quantity'] / r['clicks'] * 100, 2) + '%' if r['clicks'] else '—'}</td>"
+                          f"<td>{fpct(r.get('is_impression_share'))}</td><td>{fpct(lb)}</td><td>{fpct(lr)}</td></tr>")
+            html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Campaña</th><th style='text-align:left'>Recomendación</th><th>Estado</th><th>Estrategia</th>"
+                 "<th>Presup./día</th><th>ACOS obj.</th><th>ACOS real</th><th>ROAS</th><th>Inversión</th><th>Ventas</th><th>CTR</th><th>CPC</th><th>CVR</th>"
+                 "<th>Impr. share</th><th>Pérdida x presup.</th><th>Pérdida x ranking</th></tr></thead>"
+                 f"<tbody>{filas}</tbody></table></div>")
+
+        # ---------- PRODUCTOS EN CAMPAÑA + STOCK ----------
+        seccion("Productos", "Productos en campaña vs. stock",
+                "Cruza cada anuncio con el stock en MeLi, el depósito y la velocidad de venta (Tienda + MeLi, 30 días). Métricas del anuncio: últimos 30 días.")
+        if a_items.empty:
+            st.info("Sin datos de anuncios.")
+        else:
+            it = a_items[a_items["marca"].isin(marcas_sel) & a_items["campaign_id"].isin(camp_sel)].copy()
+            for c_ in ["m30_cost", "m30_clicks", "m30_prints", "m30_units_quantity", "m30_total_amount", "m7_cost"]:
+                it[c_] = pd.to_numeric(it[c_], errors="coerce").fillna(0) if c_ in it.columns else 0.0
+            pub_a = load_aux("meli_publicaciones.csv")
+            cat_a = load_aux("catalogo_stock.csv")
+            if not pub_a.empty:
+                it = it.merge(pub_a[["item_id", "sku", "modelo_color", "stock", "estado"]].rename(columns={"stock": "stock_meli", "estado": "estado_pub"}),
+                              on="item_id", how="left")
+            else:
+                it["sku"], it["modelo_color"], it["stock_meli"], it["estado_pub"] = "", "", np.nan, ""
+            if not cat_a.empty:
+                cat_a["stock"] = pd.to_numeric(cat_a["stock"], errors="coerce").fillna(0).clip(lower=0)
+                ps, pmod = cat_a.groupby(["marca", "sku"])["stock"].sum(), cat_a.groupby(["marca", "modelo_color"])["stock"].sum()
+                it["stock_dep"] = [ps.get((m, str(s)), pmod.get((m, str(mc)), np.nan)) for m, s, mc in zip(it["marca"], it["sku"], it["modelo_color"])]
+            else:
+                it["stock_dep"] = np.nan
+            v30 = base_net[(base_net["dia"] > hoy - timedelta(days=30)) & (base_net["cantidad"] > 0)]
+            vel_sku = v30.groupby("sku")["cantidad"].sum() / 30
+            vel_mod = v30.groupby("modelo_color")["cantidad"].sum() / 30
+            it["vel"] = [vel_sku.get(str(s), np.nan) if str(s) in vel_sku.index else vel_mod.get(str(mc), 0) for s, mc in zip(it["sku"], it["modelo_color"])]
+            it["vel"] = pd.to_numeric(it["vel"], errors="coerce").fillna(0)
+            it["stock_ref"] = it[["stock_meli", "stock_dep"]].min(axis=1, skipna=True)
+            it["cobertura"] = np.where(it["vel"] > 0, it["stock_ref"] / it["vel"], np.inf)
+            it["acos30"] = np.where(it["m30_total_amount"] > 0, it["m30_cost"] / it["m30_total_amount"] * 100, np.nan)
+            it["cvr30"] = np.where(it["m30_clicks"] > 0, it["m30_units_quantity"] / it["m30_clicks"] * 100, np.nan)
+            obj_c = dict(zip(a_camp["campaign_id"], pd.to_numeric(a_camp["acos_objetivo"], errors="coerce"))) if not a_camp.empty else {}
+            it["acos_obj"] = it["campaign_id"].map(obj_c)
+            gasto_ref = it.loc[it["m30_cost"] > 0, "m30_cost"].quantile(0.75) if (it["m30_cost"] > 0).any() else 0
+
+            def accion(r):
+                activo = str(r["estado_ad"]) == "active"
+                sin_stock = (pd.notna(r["stock_meli"]) and r["stock_meli"] <= 0) or (pd.notna(r["stock_dep"]) and r["stock_dep"] <= 0)
+                if activo and sin_stock:
+                    return "🔴 Pausar: sin stock"
+                if activo and r["vel"] > 0 and r["cobertura"] < 15:
+                    return "🟠 Reponer: stock crítico"
+                if activo and r["m30_cost"] >= gasto_ref and r["m30_units_quantity"] == 0 and r["m30_cost"] > 0:
+                    return "⚪ Revisar: gasta sin vender"
+                obj = r["acos_obj"] if pd.notna(r["acos_obj"]) else 20
+                if activo and pd.notna(r["acos30"]) and r["acos30"] > obj * 1.5:
+                    return "🔻 ACOS alto"
+                if activo and pd.notna(r["acos30"]) and r["acos30"] <= obj and r["cobertura"] >= 30:
+                    return "🟢 Escalar"
+                if not activo and not sin_stock and pd.notna(r["stock_ref"]) and r["stock_ref"] > 0 and r["vel"] > 0:
+                    return "🟣 Reactivar anuncio"
+                return "Mantener"
+            it["accion"] = it.apply(accion, axis=1)
+
+            desperdicio7 = it.loc[it["accion"] == "🔴 Pausar: sin stock", "m7_cost"].sum()
+            desperdicio30 = it.loc[it["accion"] == "🔴 Pausar: sin stock", "m30_cost"].sum()
+            cnt = it["accion"].value_counts()
+            k6 = st.columns(6)
+            k6[0].markdown(kpi_card("Anuncios activos", fmt_num((it["estado_ad"] == "active").sum()), f"<span class='delta flat'>{fmt_num(len(it))} en campañas</span>", "", "#22D3EE", sm=True), unsafe_allow_html=True)
+            k6[1].markdown(kpi_card("🔴 Sin stock y con anuncio", fmt_num(cnt.get("🔴 Pausar: sin stock", 0)), f"<span class='delta down'>gastaron {fmt_compact(desperdicio7)} en 7 días</span>", "", "#EF4444", sm=True), unsafe_allow_html=True)
+            k6[2].markdown(kpi_card("🟠 Para reponer", fmt_num(cnt.get("🟠 Reponer: stock crítico", 0)), "<span class='delta flat'>&lt; 15 días de stock</span>", "", "#FB923C", sm=True), unsafe_allow_html=True)
+            k6[3].markdown(kpi_card("⚪ Gastan sin vender", fmt_num(cnt.get("⚪ Revisar: gasta sin vender", 0)), "", "", "#94A3B8", sm=True), unsafe_allow_html=True)
+            k6[4].markdown(kpi_card("🔻 ACOS alto", fmt_num(cnt.get("🔻 ACOS alto", 0)), "<span class='delta flat'>&gt; 1,5x el objetivo</span>", "", "#FBBF24", sm=True), unsafe_allow_html=True)
+            k6[5].markdown(kpi_card("🟢 Para escalar", fmt_num(cnt.get("🟢 Escalar", 0)), "<span class='delta up'>ACOS sano y stock &gt; 30 días</span>", "", "#34D399", sm=True), unsafe_allow_html=True)
+            if desperdicio30 > 0:
+                st.caption(f"💸 Inversión en anuncios de productos sin stock en los últimos 30 días: **{fmt_ars(desperdicio30)}**.")
+            opciones_acc = ["Todas"] + [a for a in ["🔴 Pausar: sin stock", "🟠 Reponer: stock crítico", "⚪ Revisar: gasta sin vender",
+                                                    "🔻 ACOS alto", "🟢 Escalar", "🟣 Reactivar anuncio", "Mantener"] if cnt.get(a, 0)]
+            ver_acc = st.segmented_control("Acción", opciones_acc, default="Todas", key="ads_accion") or "Todas"
+            T = it if ver_acc == "Todas" else it[it["accion"] == ver_acc]
+            _prio = {"🔴 Pausar: sin stock": 0, "🟠 Reponer: stock crítico": 1, "⚪ Revisar: gasta sin vender": 2, "🔻 ACOS alto": 3,
+                     "🟣 Reactivar anuncio": 4, "🟢 Escalar": 5, "Mantener": 6}
+            T = T.assign(_p=T["accion"].map(_prio)).sort_values(["_p", "m30_cost"], ascending=[True, False])
+            pill = {"🔴": "bad", "🟠": "warn", "⚪": "warn", "🔻": "bad", "🟢": "ok", "🟣": "warn"}
+            filas = ""
+            for _, r in T.head(40).iterrows():
+                cls = pill.get(r["accion"][:1], "")
+                img = r["thumbnail"] if str(r.get("thumbnail", "")).startswith("http") else img_azure(r["marca"], r.get("modelo_color", ""))
+                cob = "∞" if not np.isfinite(r["cobertura"]) else f"{r['cobertura']:.0f} d"
+                filas += (f"<tr><td style='text-align:left;max-width:300px;overflow:hidden;text-overflow:ellipsis'>"
+                          f"<img src='{img}' style='width:34px;height:34px;object-fit:contain;background:#fff;border-radius:6px;vertical-align:middle;margin-right:8px'>"
+                          f"<a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:48]}</a></td>"
+                          f"<td style='text-align:left;white-space:nowrap'><span class='pill {cls}'>{r['accion']}</span></td><td>{r['marca']}</td><td style='max-width:160px;overflow:hidden;text-overflow:ellipsis'>{nombres_c.get(r['campaign_id'], r['campaign_id'])}</td>"
+                          f"<td>{r['estado_ad']}</td><td>{fmt_ars(r['m30_cost'])}</td><td>{fmt_ars(r['m30_total_amount'])}</td>"
+                          f"<td>{fmt_dec(r['acos30'], 0) + '%' if pd.notna(r['acos30']) else '—'}</td><td>{fmt_num(r['m30_clicks'])}</td>"
+                          f"<td>{fmt_dec(r['cvr30'], 1) + '%' if pd.notna(r['cvr30']) else '—'}</td>"
+                          f"<td>{fmt_num(r['stock_meli']) if pd.notna(r['stock_meli']) else '—'}</td><td>{fmt_num(r['stock_dep']) if pd.notna(r['stock_dep']) else '—'}</td>"
+                          f"<td>{cob}</td></tr>")
+            if filas:
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Publicación</th><th style='text-align:left'>Acción sugerida</th><th>Marca</th><th>Campaña</th><th>Anuncio</th>"
+                     "<th>Inversión 30d</th><th>Ventas ads 30d</th><th>ACOS</th><th>Clics</th><th>CVR</th><th>Stock MeLi</th><th>Depósito</th><th>Cobertura</th>"
+                     f"</tr></thead><tbody>{filas}</tbody></table></div>")
+                st.caption(f"Mostrando hasta 40 de {fmt_num(len(T))}, ordenados por urgencia de la acción y luego por inversión. Cobertura = días de stock a la velocidad de venta actual.")
+            exp = T[["marca", "item_id", "titulo", "sku", "campaign_id", "estado_ad", "m30_cost", "m30_total_amount", "acos30", "m30_clicks",
+                     "m30_units_quantity", "cvr30", "stock_meli", "stock_dep", "vel", "cobertura", "accion", "permalink"]].copy()
+            exp["campaign_id"] = exp["campaign_id"].map(lambda x: nombres_c.get(x, x))
+            st.download_button("Descargar productos en campaña (CSV)", exp.to_csv(index=False).encode("utf-8"),
+                               file_name="productos_en_campania.csv", mime="text/csv", icon=":material/download:")
+
+            # ---------- OPORTUNIDADES: STOCK SIN PUBLICIDAD ----------
+            if not pub_a.empty:
+                seccion("Oportunidades", "Stock sin publicidad",
+                        "Publicaciones activas con stock en depósito que no están en ninguna campaña: candidatas a sumar a Product Ads.")
+                fuera = pub_a[pub_a["marca"].isin(marcas_sel) & (pub_a["estado"] == "active") & ~pub_a["item_id"].isin(a_items["item_id"])].copy()
+                if not cat_a.empty and not fuera.empty:
+                    fuera["stock_dep"] = [ps.get((m, str(s)), pmod.get((m, str(mc)), 0)) for m, s, mc in zip(fuera["marca"], fuera["sku"], fuera["modelo_color"])]
+                    fuera["visitas_30d"] = pd.to_numeric(fuera["visitas_30d"], errors="coerce").fillna(0)
+                    fuera = fuera[fuera["stock_dep"] > 0].sort_values(["stock_dep", "visitas_30d"], ascending=False)
+                    filas = "".join(
+                        f"<tr><td style='text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis'><a href='{r['permalink']}' target='_blank' style='color:#E5E7EB;text-decoration:none'>{str(r['titulo'])[:55]}</a></td>"
+                        f"<td>{r['marca']}</td><td>{r['sku']}</td><td class='strong'>{fmt_num(r['stock_dep'])}</td><td>{fmt_num(r['stock'])}</td><td>{fmt_num(r['visitas_30d'])}</td><td>{fmt_ars(r['precio'] or 0)}</td></tr>"
+                        for _, r in fuera.head(20).iterrows())
+                    if filas:
+                        html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Publicación</th><th>Marca</th><th>SKU</th>"
+                             f"<th>Stock depósito</th><th>Stock MeLi</th><th>Visitas 30d</th><th>Precio</th></tr></thead><tbody>{filas}</tbody></table></div>")
+                        st.caption(f"{fmt_num(len(fuera))} publicaciones activas con stock y sin anuncio. Ordenadas por stock en depósito.")
+                    else:
+                        st.success("Todas las publicaciones con stock están en alguna campaña.")
 
 # ==============================================================================
 # TAB · CLIENTES
