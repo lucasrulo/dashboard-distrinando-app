@@ -21,7 +21,7 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================================================================
 # 1. CONFIGURACIÓN
 # ==============================================================================
-st.set_page_config(page_title="Distrinando | Centro de datos", page_icon="📊",
+st.set_page_config(page_title="Distrinando | Centro de Comando", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
 REPO_DATOS = "lucasrulo/dashboard-distrinando"
@@ -656,7 +656,7 @@ def pantalla_login():
     </style>""")
     html("<div style='text-align:center;margin-bottom:22px'>"
          "<div style='font-family:Space Grotesk, sans-serif;font-size:30px;font-weight:700;letter-spacing:2px;color:#F8FAFC'>DISTRINANDO</div>"
-         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de datos</div></div>")
+         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de Comando</div></div>")
     usuarios = _usuarios()
     bloqueado_hasta = st.session_state.get("login_bloqueo", 0)
     with st.form("login", clear_on_submit=False):
@@ -785,7 +785,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de datos</div>"
+     "<div class='hero-title'>Centro de Comando</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -2335,19 +2335,98 @@ if tab_ops is not None:
             # ---------- PENDIENTES POR ANTIGÜEDAD ----------
             seccion("Depósito", "Pendientes de despacho por antigüedad",
                     "Pedidos que todavía no salieron, según días hábiles desde la compra (excluye sábados y domingos).")
+            # Filtros propios de esta sección (parten de todos los canales, no del selector de arriba)
+            pend_all = P[P["envio_estado"].astype(str).isin(ENV_PEND)].copy()
+            pend_all["canal"] = pend_all["canal"].astype(str)
+            pend_all["marca"] = pend_all["marca"].astype(str)
+            pc1, pc2 = st.columns([1, 1.6])
+            with pc1:
+                sel_p = st.segmented_control("Canal", OPC_CANAL, default=sel_o, key="pend_canal") or "Consolidado"
+            marcas_p_disp = [m for m in MARCAS_BASE if m in set(pend_all["marca"])] + sorted(set(pend_all["marca"]) - set(MARCAS_BASE))
+            with pc2:
+                marcas_p = st.pills("Marcas", marcas_p_disp, selection_mode="multi", default=marcas_p_disp, key="pend_marcas") or marcas_p_disp
+            pend = por_canal(pend_all, sel_p)
+            pend = pend[pend["marca"].isin(marcas_p)]
             if pend.empty:
-                st.success("No hay pedidos pendientes de despacho. 🎉")
+                st.success("No hay pedidos pendientes de despacho para este filtro. 🎉")
             else:
                 pend = pend.copy()
                 pend["dias_hab"] = dias_habiles(pend["fecha"], hoy)
                 tramos = [("Hoy", 0, 0, "#34D399"), ("1 día háb.", 1, 1, "#FBBF24"), ("2 días háb.", 2, 2, "#FB923C"),
                           ("3 a 5 días háb.", 3, 5, "#F87171"), ("+5 días háb.", 6, 10**6, "#EF4444")]
+                pend["tramo"] = pd.cut(pend["dias_hab"], bins=[-1, 0, 1, 2, 5, 10**6], labels=[t[0] for t in tramos])
+
+                def _split_marcas(sub):
+                    vc = sub["marca"].value_counts()
+                    tot = int(vc.sum())
+                    if tot == 0:
+                        return ""
+                    segs = "".join(f"<div style='width:{v / tot * 100:.2f}%;background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></div>" for m_, v in vc.items())
+                    leg = "".join(f"<span><span class='dot' style='background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></span>{m_} {v}</span>" for m_, v in vc.head(3).items())
+                    return f"<div class='split'>{segs}</div><div class='split-legend'>{leg}</div>"
+
                 k = st.columns(len(tramos))
                 for col, (lbl, lo, hi, colr) in zip(k, tramos):
                     sub = pend[(pend["dias_hab"] >= lo) & (pend["dias_hab"] <= hi)]
-                    col.markdown(kpi_card(lbl, fmt_num(len(sub)), "", split_html(por_canal_vals(sub, "ords")), colr, sm=True), unsafe_allow_html=True)
+                    spl = split_html(por_canal_vals(sub, "ords")) if sel_p == "Consolidado" else _split_marcas(sub)
+                    col.markdown(kpi_card(lbl, fmt_num(len(sub)), f"<span class='delta flat'>{fmt_num(sub['unidades'].sum())} unid.</span>",
+                                          spl, colr, sm=True), unsafe_allow_html=True)
                 st.write("")
-                viejos = pend.sort_values(["dias_hab", "fecha"], ascending=[False, True])
+
+                # ---- Por marca: matriz antigüedad + gráfico ----
+                mat = pend.pivot_table(index="marca", columns="tramo", values="nro_pedido", aggfunc="count", fill_value=0, observed=False)
+                mat = mat.reindex(columns=[t[0] for t in tramos], fill_value=0)
+                mat["Total"] = mat.sum(axis=1)
+                mat = mat.sort_values("Total", ascending=False)
+                uni_m = pend.groupby("marca")["unidades"].sum()
+                monto_m = pend.groupby("marca")["total_pedido"].sum()
+                por_canal_m = pend.groupby(["marca", "canal"]).size().unstack(fill_value=0)
+                g1, g2 = st.container(), st.container()
+                with g1:
+                    filas = ""
+                    mx = max(1, int(mat[[t[0] for t in tramos]].values.max()))
+                    for m_, r in mat.iterrows():
+                        celdas = ""
+                        for (lbl, _, _, colr) in tramos:
+                            v = int(r[lbl])
+                            alpha = 0.08 + 0.55 * (v / mx) if v else 0
+                            bg = f"background:{colr}{int(alpha * 255):02x};" if v else ""
+                            celdas += f"<td style='{bg}text-align:center;font-weight:{700 if v else 400}'>{fmt_num(v) if v else '·'}</td>"
+                        atr = int(r["3 a 5 días háb."] + r["+5 días háb."])
+                        pct_atr = atr / r["Total"] * 100 if r["Total"] else 0
+                        cls = "ok" if pct_atr < 5 else ("warn" if pct_atr < 15 else "bad")
+                        canal_txt = " · ".join(f"{CORTO.get(c_, c_)} {int(por_canal_m.loc[m_, c_])}" for c_ in por_canal_m.columns if por_canal_m.loc[m_, c_] > 0)
+                        filas += (f"<tr><td class='strong'><span class='dot' style='background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></span>{m_}"
+                                  f"<br><small style='color:var(--muted);font-weight:500;margin-left:14px'>{canal_txt}</small></td>{celdas}"
+                                  f"<td class='strong sep'>{fmt_num(r['Total'])}</td><td>{fmt_num(uni_m.get(m_, 0))}</td><td>{fmt_compact(monto_m.get(m_, 0))}</td>"
+                                  f"<td><span class='pill {cls}'>{pct_atr:.0f}%</span></td></tr>")
+                    tot_r = mat.sum()
+                    atr_t = int(tot_r["3 a 5 días háb."] + tot_r["+5 días háb."])
+                    filas += ("<tr class='total'><td>Total</td>" + "".join(f"<td style='text-align:center'>{fmt_num(tot_r[t[0]])}</td>" for t in tramos) +
+                              f"<td class='sep'>{fmt_num(tot_r['Total'])}</td><td>{fmt_num(pend['unidades'].sum())}</td><td>{fmt_compact(pend['total_pedido'].sum())}</td>"
+                              f"<td>{atr_t / tot_r['Total'] * 100 if tot_r['Total'] else 0:.0f}%</td></tr>")
+                    html("<div class='tbl-wrap'><table class='ftable compact'><thead><tr><th>Marca</th>" +
+                         "".join(f"<th style='text-align:center'>{t[0]}</th>" for t in tramos) +
+                         "<th class='sep'>Total</th><th>Unid.</th><th>Monto</th><th>% 3+ días</th></tr></thead>"
+                         f"<tbody>{filas}</tbody></table></div>")
+                    st.caption("Pedidos pendientes por marca y antigüedad. '% 3+ días' = parte de los pendientes de la marca con 3 o más días hábiles de espera.")
+                with g2:
+                    bar = pend.groupby(["marca", "tramo"], observed=False).size().rename("pedidos").reset_index()
+                    bar["marca"] = bar["marca"].astype(str)
+                    bar = bar[bar["marca"].isin(mat.index)]
+                    fig = px.bar(bar, y="marca", x="pedidos", color="tramo", orientation="h", title="Pendientes por marca y antigüedad",
+                                 category_orders={"marca": list(mat.index), "tramo": [t[0] for t in tramos]},
+                                 color_discrete_map={t[0]: t[3] for t in tramos})
+                    fig.update_traces(marker_line_width=0)
+                    fig.update_layout(xaxis_title="", yaxis_title="", barmode="stack", bargap=0.3, legend_title_text="")
+                    fig = estilo(fig, 110 + 48 * max(3, len(mat)))
+                    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0), margin=dict(t=80))
+                    st.plotly_chart(fig, width="stretch")
+
+                # ---- Detalle de pedidos ----
+                ver_tr = st.segmented_control("Ver pedidos", ["Todos"] + [t[0] for t in tramos], default="Todos", key="pend_tramo") or "Todos"
+                det_p = pend if ver_tr == "Todos" else pend[pend["tramo"].astype(str) == ver_tr]
+                viejos = det_p.sort_values(["dias_hab", "fecha"], ascending=[False, True])
                 filas = ""
                 for _, r in viejos.head(30).iterrows():
                     dh = int(r["dias_hab"])
@@ -2356,13 +2435,14 @@ if tab_ops is not None:
                               f"<td><span class='dot' style='background:{COLOR_CANAL.get(r['canal'], '#94A3B8')}'></span>{CORTO.get(r['canal'], r['canal'])}</td>"
                               f"<td>{r['marca']}</td><td>{r['fecha']:%d/%m %H:%M}</td><td><span class='pill {cls}'>{dh} días háb.</span></td>"
                               f"<td>{r['envio_estado']}</td><td>{r['provincia']}</td><td>{fmt_num(r['unidades'])}</td><td>{fmt_ars(r['total_pedido'])}</td></tr>")
-                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Pedido</th><th>Canal</th><th>Marca</th><th>Compra</th>"
-                     "<th>Esperando</th><th>Estado</th><th>Provincia</th><th>Unid.</th><th>Total</th></tr></thead>"
-                     f"<tbody>{filas}</tbody></table></div>")
+                if filas:
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Pedido</th><th>Canal</th><th>Marca</th><th>Compra</th>"
+                         "<th>Esperando</th><th>Estado</th><th>Provincia</th><th>Unid.</th><th>Total</th></tr></thead>"
+                         f"<tbody>{filas}</tbody></table></div>")
                 exp = viejos[["nro_pedido", "canal", "marca", "fecha", "dias_hab", "envio_estado", "envio_detalle", "provincia", "unidades", "total_pedido"]].copy()
                 exp["fecha"] = exp["fecha"].dt.strftime("%d/%m/%Y %H:%M")
-                st.caption(f"Los 30 más atrasados de {fmt_num(len(pend))} pendientes.")
-                st.download_button("Descargar todos los pendientes (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"),
+                st.caption(f"Los 30 más atrasados de {fmt_num(len(det_p))} pendientes del filtro.")
+                st.download_button("Descargar pendientes del filtro (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"),
                                    file_name="pendientes_despacho.csv", mime="text/csv", icon=":material/download:")
 
             # ---------- TIEMPOS ----------
