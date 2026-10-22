@@ -58,15 +58,18 @@ PROVINCIAS_MAPA = {
     'santa fe': 'Santa Fe', 'santiago del estero': 'Santiago del Estero',
     'tierra del fuego': 'Tierra del Fuego', 'tdf': 'Tierra del Fuego', 'tucumán': 'Tucumán', 'tucuman': 'Tucumán'
 }
-ORDEN_ENVIO = ["Pendiente", "Listo para despachar", "Despachado", "En camino", "En reparto", "Listo para retirar",
+ORDEN_ENVIO = ["Esperando pago", "Pendiente", "Listo para despachar", "Despachado", "En camino", "En reparto", "Listo para retirar",
                "Intento fallido", "Entregado", "No entregado", "Devolución", "Cancelado"]
-COLOR_ENVIO = {"Pendiente": "#F87171", "Listo para despachar": "#FBBF24", "Despachado": "#38BDF8", "En camino": "#22D3EE",
+COLOR_ENVIO = {"Esperando pago": "#94A3B8", "Pendiente": "#F87171", "Listo para despachar": "#FBBF24", "Despachado": "#38BDF8", "En camino": "#22D3EE",
                "En reparto": "#A78BFA", "Listo para retirar": "#818CF8", "Intento fallido": "#F472B6", "Entregado": "#34D399",
                "No entregado": "#EF4444", "Devolución": "#FB923C", "Cancelado": "#64748B"}
 ENV_PEND = {"Pendiente", "Listo para despachar"}
 ENV_CURSO = {"Despachado", "En camino", "En reparto", "Listo para retirar", "Intento fallido"}
 ENV_DESP = ENV_CURSO | {"Entregado", "No entregado", "Devolución"}
 ENV_PROB = {"Intento fallido", "No entregado", "Devolución"}
+# Estado de pago (Shopify financial_status): vencido/anulado = no es venta; pendiente/reintegrado = no se despacha
+PAGO_EXCLUIR = {"expired", "voided"}
+PAGO_SIN_DESPACHO = {"pending", "authorized", "partially_paid", "refunded"}
 ORDEN_CUOTAS = ["1 pago", "Débito", "2 cuotas", "3 cuotas", "4 cuotas", "6 cuotas", "9 cuotas", "12 cuotas", "18 cuotas"]
 SIN_DESCUENTO = {"SIN DESCUENTO", "", "NAN", "NONE"}
 
@@ -469,6 +472,12 @@ def load_data():
         df["envio_estado"] = df["envio_estado"].fillna(deducido).replace("", np.nan).fillna(deducido)
     else:
         df["envio_estado"] = deducido
+    # 💳 Estado de pago: los pedidos con pago vencido o anulado no son ventas -> se excluyen de todo el dashboard.
+    #    Los que todavía esperan el pago (o se reintegraron) no cuentan como pendientes de despacho.
+    df["estado_pago"] = (df["estado_pago"] if "estado_pago" in df.columns else pd.Series("", index=df.index)).fillna("").astype(str).str.lower()
+    df = df[~df["estado_pago"].isin(PAGO_EXCLUIR)].copy()
+    sin_pago = df["estado_pago"].isin(PAGO_SIN_DESPACHO) & df["envio_estado"].astype(str).isin(ENV_PEND)
+    df.loc[sin_pago, "envio_estado"] = "Esperando pago"
     fe = df["fecha_entrega"] if "fecha_entrega" in df.columns else pd.Series(pd.NaT, index=df.index)
     df["fecha_entrega"] = pd.to_datetime(fe, errors="coerce", format="mixed", utc=True).dt.tz_convert(ZONA_AR)
     df["nro_pedido"] = df["nro_pedido"].where(df["nro_pedido"] != "", df["id_pedido"].astype(str))
@@ -2347,6 +2356,10 @@ if tab_ops is not None:
                 marcas_p = st.pills("Marcas", marcas_p_disp, selection_mode="multi", default=marcas_p_disp, key="pend_marcas") or marcas_p_disp
             pend = por_canal(pend_all, sel_p)
             pend = pend[pend["marca"].isin(marcas_p)]
+            _esp = por_canal(P[P["envio_estado"].astype(str) == "Esperando pago"], sel_p)
+            _esp = _esp[_esp["marca"].astype(str).isin(marcas_p)]
+            st.caption(f"No se cuentan: pedidos Reversso, con pago vencido/anulado y cancelados. "
+                       f"{fmt_num(len(_esp))} pedido(s) de Tienda esperando acreditación del pago tampoco suman (todavía no se pueden despachar).")
             if pend.empty:
                 st.success("No hay pedidos pendientes de despacho para este filtro. 🎉")
             else:
