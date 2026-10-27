@@ -21,7 +21,7 @@ from streamlit_autorefresh import st_autorefresh
 # ==============================================================================
 # 1. CONFIGURACIÓN
 # ==============================================================================
-st.set_page_config(page_title="Distrinando | Centro de de datos", page_icon="📊",
+st.set_page_config(page_title="Distrinando | Centro de datos", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
 REPO_DATOS = "lucasrulo/dashboard-distrinando"
@@ -665,7 +665,7 @@ def pantalla_login():
     </style>""")
     html("<div style='text-align:center;margin-bottom:22px'>"
          "<div style='font-family:Space Grotesk, sans-serif;font-size:30px;font-weight:700;letter-spacing:2px;color:#F8FAFC'>DISTRINANDO</div>"
-         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de de datos</div></div>")
+         "<div style='font-size:11px;color:#8B95A7;letter-spacing:3px;text-transform:uppercase;margin-top:4px'>E-commerce · Centro de datos</div></div>")
     usuarios = _usuarios()
     bloqueado_hasta = st.session_state.get("login_bloqueo", 0)
     with st.form("login", clear_on_submit=False):
@@ -794,7 +794,7 @@ hay_prev = (not P_prev.empty) and p0 >= f_min
 rango_txt = f"{d0:%d/%m}" if d0 == d1 else f"{d0:%d/%m} → {d1:%d/%m/%Y}"
 canales_con_datos = [c for c in CANALES if (df_raw["canal"] == c).any()]
 html("<div class='hero'><div><div class='hero-eyebrow'>Distrinando · E-commerce</div>"
-     "<div class='hero-title'>Centro de de datos</div>"
+     "<div class='hero-title'>Centro de datos</div>"
      f"<div class='hero-sub'>Venta neta consolidada · <b>{' + '.join(canales_con_datos)}</b> · <b>{len(marcas_sel)}</b> marcas · <b>{rango_txt}</b></div></div>"
      f"<div class='live'><span class='live-dot'></span>EN VIVO · {ahora:%H:%M} hs</div></div>")
 
@@ -1678,6 +1678,10 @@ with tab_ads:
             camp_sel = camp_elegidas or camp_opts
         html(f"<div class='hero-sub'>📅 <b>{a0:%d/%m/%Y} → {a1:%d/%m/%Y}</b> ({nd} días)" + ("" if modo30 else f" · comparado con {pa0:%d/%m} → {pa1:%d/%m}") + " · "
              f"MeLi consolida la publicidad 1 vez por día (datos hasta {f_ads_max:%d/%m}).</div>")
+        met_ef = st.segmented_control("Analizar eficiencia por", ["ACOS", "ROAS"], default="ACOS", key="ads_metrica",
+                                      help="ACOS = inversión / ventas por ads (más bajo es mejor). ROAS = ventas por ads / inversión (más alto es mejor). "
+                                           "Son la misma medida invertida: ACOS 10% = ROAS 10x.") or "ACOS"
+        EsR = met_ef == "ROAS"
         dsel = a_dia[a_dia["campaign_id"].isin(camp_sel)]
         cur = dsel[(dsel["dia"] >= a0) & (dsel["dia"] <= a1)]
         if modo30:
@@ -1769,13 +1773,15 @@ with tab_ads:
           else:
             td = cur.groupby("dia")[["cost", "total_amount"]].sum().reset_index()
             td["acos"] = np.where(td["total_amount"] > 0, td["cost"] / td["total_amount"] * 100, np.nan)
+            td["roas"] = np.where(td["cost"] > 0, td["total_amount"] / td["cost"], np.nan)
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             fig.add_bar(x=td["dia"], y=td["cost"], name="Inversión", marker_color="#F472B6", opacity=0.85)
             fig.add_scatter(x=td["dia"], y=td["total_amount"], name="Ventas por ads", line=dict(color="#34D399", width=2.5, shape="spline"))
-            fig.add_scatter(x=td["dia"], y=td["acos"], name="ACOS %", line=dict(color="#FBBF24", width=2, dash="dot"), secondary_y=True)
-            fig.update_layout(title="Inversión, ventas y ACOS por día", hovermode="x unified", bargap=0.3)
+            fig.add_scatter(x=td["dia"], y=td["roas" if EsR else "acos"], name="ROAS (x)" if EsR else "ACOS %",
+                            line=dict(color="#FBBF24", width=2, dash="dot"), secondary_y=True)
+            fig.update_layout(title=f"Inversión, ventas y {met_ef} por día", hovermode="x unified", bargap=0.3)
             fig.update_yaxes(title_text="$", secondary_y=False)
-            fig.update_yaxes(title_text="ACOS", secondary_y=True, showgrid=False, ticksuffix="%", tickformat=".1f", rangemode="tozero")
+            fig.update_yaxes(title_text=met_ef, secondary_y=True, showgrid=False, ticksuffix="x" if EsR else "%", tickformat=".1f", rangemode="tozero")
             st.plotly_chart(estilo(fig, 400), width="stretch")
         with g2:
             fig = go.Figure(go.Funnel(y=["Impresiones", "Clics", "Unidades vendidas"],
@@ -1807,17 +1813,22 @@ with tab_ads:
             fig.update_layout(xaxis_title="", yaxis_title="", bargap=0.25)
             st.plotly_chart(estilo(fig, 380), width="stretch")
         with g2:
-            ml = bm.melt(id_vars="marca", value_vars=["acos", "tacos"], var_name="m", value_name="pct")
+            bm["roas"] = np.where(bm["cost"] > 0, bm["total_amount"] / bm["cost"], 0)
+            bm["roas total"] = [vm_marca.get(m, 0) / bm.loc[i, "cost"] if bm.loc[i, "cost"] else 0 for i, m in zip(bm.index, bm["marca"])]
+            ml = bm.melt(id_vars="marca", value_vars=["roas", "roas total"] if EsR else ["acos", "tacos"], var_name="m", value_name="pct")
             ml["m"] = ml["m"].str.upper()
-            fig = px.bar(ml, x="marca", y="pct", color="m", barmode="group", text=ml["pct"].map(lambda v: fmt_dec(v) + "%"),
-                         color_discrete_map={"ACOS": "#FBBF24", "TACOS": "#A78BFA"}, title="ACOS y TACOS por marca")
+            _suf = "x" if EsR else "%"
+            fig = px.bar(ml, x="marca", y="pct", color="m", barmode="group", text=ml["pct"].map(lambda v: fmt_dec(v) + _suf),
+                         color_discrete_map={"ACOS": "#FBBF24", "TACOS": "#A78BFA", "ROAS": "#22D3EE", "ROAS TOTAL": "#A78BFA"},
+                         title="ROAS y ROAS total por marca" if EsR else "ACOS y TACOS por marca")
             fig.update_traces(marker_line_width=0)
-            fig.update_layout(xaxis_title="", yaxis_title="%", bargap=0.3)
+            fig.update_layout(xaxis_title="", yaxis_title=_suf, bargap=0.3, legend_title_text="")
             st.plotly_chart(estilo(fig, 380), width="stretch")
 
         # ---------- CAMPAÑAS ----------
         seccion("Campañas", "Rendimiento y salud de cada campaña",
-                "Participación de impresiones y pérdidas son de los últimos 30 días. La recomendación cruza ACOS real vs. objetivo y por qué se pierden impresiones.")
+                f"Participación de impresiones y pérdidas son de los últimos 30 días. La recomendación cruza {met_ef} real vs. objetivo y por qué se pierden impresiones."
+                + (" ROAS objetivo = 100 / ACOS objetivo de la campaña." if EsR else ""))
         cm = cur.groupby("campaign_id")[["cost", "total_amount", "clicks", "prints", "units_quantity"]].sum()
         if not a_camp.empty:
             cm = a_camp.set_index("campaign_id").join(cm, how="left").fillna({"cost": 0, "total_amount": 0, "clicks": 0, "prints": 0, "units_quantity": 0})
@@ -1833,11 +1844,11 @@ with tab_ads:
                 if str(r.get("estado")) != "active":
                     rec, cls = "Pausada", "warn"
                 elif pd.notna(acos_r) and pd.notna(obj) and acos_r > obj * 1.2:
-                    rec, cls = "🔻 ACOS sobre objetivo: revisar anuncios que gastan sin vender", "bad"
+                    rec, cls = ("🔻 ROAS bajo el objetivo" if EsR else "🔻 ACOS sobre objetivo") + ": revisar anuncios que gastan sin vender", "bad"
                 elif pd.notna(lb) and lb >= 20 and (pd.isna(obj) or pd.isna(acos_r) or acos_r <= obj):
-                    rec, cls = f"⬆️ Subir presupuesto: pierde {fmt_dec(lb, 0)}% de impresiones con ACOS sano", "ok"
+                    rec, cls = f"⬆️ Subir presupuesto: pierde {fmt_dec(lb, 0)}% de impresiones con {met_ef} sano", "ok"
                 elif pd.notna(lr) and lr >= 30:
-                    rec, cls = f"🎯 Pierde {fmt_dec(lr, 0)}% por ranking: mejorar precio/publicación o subir ACOS objetivo", "warn"
+                    rec, cls = f"🎯 Pierde {fmt_dec(lr, 0)}% por ranking: mejorar precio/publicación o " + ("bajar ROAS objetivo" if EsR else "subir ACOS objetivo"), "warn"
                 elif r["cost"] > 0 and r["total_amount"] == 0:
                     rec, cls = "⚪ Gasta sin ventas", "bad"
                 else:
@@ -1848,15 +1859,18 @@ with tab_ads:
                           f"<td style='text-align:left;white-space:normal;min-width:230px'><span class='pill {cls}'>{rec}</span></td>"
                           f"<td><span class='pill {est_cls}'>{r.get('estado', '')}</span></td><td>{str(r.get('estrategia', '')).title()}</td>"
                           f"<td>{fmt_ars(pd.to_numeric(r.get('presupuesto'), errors='coerce')) if pd.notna(pd.to_numeric(r.get('presupuesto'), errors='coerce')) else '—'}</td>"
-                          f"<td>{fpct(obj)}</td><td class='strong'>{fpct(acos_r)}</td>"
-                          f"<td>{fmt_dec(r['total_amount'] / r['cost'], 1) + 'x' if r['cost'] else '—'}</td>"
+                          + (f"<td>{fmt_dec(100 / obj, 1) + 'x' if pd.notna(obj) and obj else '—'}</td>"
+                             f"<td class='strong'>{fmt_dec(r['total_amount'] / r['cost'], 1) + 'x' if r['cost'] else '—'}</td><td>{fpct(acos_r)}</td>"
+                             if EsR else
+                             f"<td>{fpct(obj)}</td><td class='strong'>{fpct(acos_r)}</td>"
+                             f"<td>{fmt_dec(r['total_amount'] / r['cost'], 1) + 'x' if r['cost'] else '—'}</td>") +
                           f"<td>{fmt_ars(r['cost'])}</td><td>{fmt_ars(r['total_amount'])}</td>"
                           f"<td>{fmt_dec(r['clicks'] / r['prints'] * 100, 2) + '%' if r['prints'] else '—'}</td>"
                           f"<td>{fmt_ars(r['cost'] / r['clicks']) if r['clicks'] else '—'}</td>"
                           f"<td>{fmt_dec(r['units_quantity'] / r['clicks'] * 100, 2) + '%' if r['clicks'] else '—'}</td>"
                           f"<td>{fpct(r.get('is_impression_share'))}</td><td>{fpct(lb)}</td><td>{fpct(lr)}</td></tr>")
             html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Campaña</th><th style='text-align:left'>Recomendación</th><th>Estado</th><th>Estrategia</th>"
-                 "<th>Presup./día</th><th>ACOS obj.</th><th>ACOS real</th><th>ROAS</th><th>Inversión</th><th>Ventas</th><th>CTR</th><th>CPC</th><th>CVR</th>"
+                 "<th>Presup./día</th>" + ("<th>ROAS obj.</th><th>ROAS real</th><th>ACOS</th>" if EsR else "<th>ACOS obj.</th><th>ACOS real</th><th>ROAS</th>") + "<th>Inversión</th><th>Ventas</th><th>CTR</th><th>CPC</th><th>CVR</th>"
                  "<th>Impr. share</th><th>Pérdida x presup.</th><th>Pérdida x ranking</th></tr></thead>"
                  f"<tbody>{filas}</tbody></table></div>")
 
@@ -1908,6 +1922,8 @@ with tab_ads:
                 it["stock_ref"] = it[["stock_meli", "stock_dep"]].min(axis=1, skipna=True)
                 it["cobertura"] = np.where(it["vel"] > 0, it["stock_ref"] / it["vel"], np.inf)
                 it["acos30"] = np.where(it["m30_total_amount"] > 0, it["m30_cost"] / it["m30_total_amount"] * 100, np.nan)
+                it["roas30"] = np.where(it["m30_cost"] > 0, it["m30_total_amount"] / it["m30_cost"], np.nan)
+                ACC_EF = "🔻 ROAS bajo" if EsR else "🔻 ACOS alto"
                 it["cvr30"] = np.where(it["m30_clicks"] > 0, it["m30_units_quantity"] / it["m30_clicks"] * 100, np.nan)
                 obj_c = dict(zip(a_camp["campaign_id"], pd.to_numeric(a_camp["acos_objetivo"], errors="coerce"))) if "acos_objetivo" in a_camp.columns else {}
                 it["acos_obj"] = it["campaign_id"].map(obj_c)
@@ -1924,9 +1940,11 @@ with tab_ads:
                         return "⚪ Revisar: gasta sin vender"
                     obj = r["acos_obj"] if pd.notna(r["acos_obj"]) else 20
                     if activo and pd.notna(r["acos30"]) and r["acos30"] > obj * 1.5:
-                        return "🔻 ACOS alto"
+                        return ACC_EF
                     if activo and pd.notna(r["acos30"]) and r["acos30"] <= obj and r["cobertura"] >= 30:
                         return "🟢 Escalar"
+                    if (not activo and pd.notna(r["stock_meli"]) and r["stock_meli"] <= 0 and pd.notna(r["stock_dep"]) and r["stock_dep"] > 0):
+                        return "🔵 Cargar stock en MeLi"
                     if not activo and not sin_stock and pd.notna(r["stock_ref"]) and r["stock_ref"] > 0 and r["vel"] > 0:
                         return "🟣 Reactivar anuncio"
                     return "Mantener"
@@ -1935,21 +1953,32 @@ with tab_ads:
                 desperdicio7 = it.loc[it["accion"] == "🔴 Pausar: sin stock", "m7_cost"].sum()
                 desperdicio30 = it.loc[it["accion"] == "🔴 Pausar: sin stock", "m30_cost"].sum()
                 cnt = it["accion"].value_counts()
+                n_pm = int((it["estado_ad"] == "paused").sum())
+                n_ph = int((it["estado_ad"] == "hold").sum())
                 k6 = st.columns(6)
-                k6[0].markdown(kpi_card("Anuncios activos", fmt_num((it["estado_ad"] == "active").sum()), f"<span class='delta flat'>{fmt_num(len(it))} en campañas</span>", "", "#22D3EE", sm=True), unsafe_allow_html=True)
+                k6[0].markdown(kpi_card("Anuncios activos", fmt_num((it["estado_ad"] == "active").sum()), f"<span class='delta flat'>{fmt_num(len(it))} en campañas</span>",
+                                        f"<div class='split-legend' style='margin-top:10px'><span>⏸️ {fmt_num(n_pm + n_ph)} pausados</span>"
+                                        f"<span>{fmt_num(n_pm)} manual · {fmt_num(n_ph)} MeLi</span></div>", "#22D3EE", sm=True), unsafe_allow_html=True)
                 k6[1].markdown(kpi_card("🔴 Sin stock y con anuncio", fmt_num(cnt.get("🔴 Pausar: sin stock", 0)), f"<span class='delta down'>gastaron {fmt_compact(desperdicio7)} en 7 días</span>", "", "#EF4444", sm=True), unsafe_allow_html=True)
                 k6[2].markdown(kpi_card("🟠 Para reponer", fmt_num(cnt.get("🟠 Reponer: stock crítico", 0)), "<span class='delta flat'>&lt; 15 días de stock</span>", "", "#FB923C", sm=True), unsafe_allow_html=True)
                 k6[3].markdown(kpi_card("⚪ Gastan sin vender", fmt_num(cnt.get("⚪ Revisar: gasta sin vender", 0)), "", "", "#94A3B8", sm=True), unsafe_allow_html=True)
-                k6[4].markdown(kpi_card("🔻 ACOS alto", fmt_num(cnt.get("🔻 ACOS alto", 0)), "<span class='delta flat'>&gt; 1,5x el objetivo</span>", "", "#FBBF24", sm=True), unsafe_allow_html=True)
-                k6[5].markdown(kpi_card("🟢 Para escalar", fmt_num(cnt.get("🟢 Escalar", 0)), "<span class='delta up'>ACOS sano y stock &gt; 30 días</span>", "", "#34D399", sm=True), unsafe_allow_html=True)
+                k6[4].markdown(kpi_card(ACC_EF, fmt_num(cnt.get(ACC_EF, 0)),
+                                        "<span class='delta flat'>" + ("&lt; objetivo ÷ 1,5" if EsR else "&gt; 1,5x el objetivo") + "</span>", "", "#FBBF24", sm=True), unsafe_allow_html=True)
+                k6[5].markdown(kpi_card("🟢 Para escalar", fmt_num(cnt.get("🟢 Escalar", 0)), f"<span class='delta up'>{met_ef} sano y stock &gt; 30 días</span>", "", "#34D399", sm=True), unsafe_allow_html=True)
                 if desperdicio30 > 0:
                     st.caption(f"💸 Inversión en anuncios de productos sin stock en los últimos 30 días: **{fmt_ars(desperdicio30)}**.")
                 opciones_acc = ["Todas"] + [a for a in ["🔴 Pausar: sin stock", "🟠 Reponer: stock crítico", "⚪ Revisar: gasta sin vender",
-                                                        "🔻 ACOS alto", "🟢 Escalar", "🟣 Reactivar anuncio", "Mantener"] if cnt.get(a, 0)]
-                ver_acc = st.segmented_control("Acción", opciones_acc, default="Todas", key="ads_accion") or "Todas"
-                _prio = {"🔴 Pausar: sin stock": 0, "🟠 Reponer: stock crítico": 1, "⚪ Revisar: gasta sin vender": 2, "🔻 ACOS alto": 3,
-                         "🟣 Reactivar anuncio": 4, "🟢 Escalar": 5, "Mantener": 6}
-                pill = {"🔴": "bad", "🟠": "warn", "⚪": "warn", "🔻": "bad", "🟢": "ok", "🟣": "warn"}
+                                                        ACC_EF, "🔵 Cargar stock en MeLi", "🟢 Escalar", "🟣 Reactivar anuncio", "Mantener"] if cnt.get(a, 0)]
+                ac1, ac2 = st.columns([2.6, 1])
+                with ac1:
+                    ver_acc = st.segmented_control("Acción", opciones_acc, default="Todas", key=f"ads_accion_{met_ef}") or "Todas"
+                with ac2:
+                    ver_est_ad = st.segmented_control("Estado del anuncio", ["Todos", "Activos", "Pausados"], default="Todos", key="ads_est_ad",
+                                                      help="Pausados = pausados a mano en la campaña + pausados automáticamente por MeLi "
+                                                           "(publicación pausada o sin stock).") or "Todos"
+                _prio = {"🔴 Pausar: sin stock": 0, "🟠 Reponer: stock crítico": 1, "⚪ Revisar: gasta sin vender": 2, ACC_EF: 3,
+                         "🔵 Cargar stock en MeLi": 4, "🟣 Reactivar anuncio": 4, "🟢 Escalar": 5, "Mantener": 6}
+                pill = {"🔴": "bad", "🟠": "warn", "⚪": "warn", "🔻": "bad", "🟢": "ok", "🟣": "warn", "🔵": "warn"}
                 it["_p"] = it["accion"].map(_prio).fillna(6)
                 it["sku"] = it["sku"].fillna("").astype(str)
                 it["modelo_color"] = it["modelo_color"].fillna("").astype(str)
@@ -1965,6 +1994,10 @@ with tab_ads:
                     solo_org = st.toggle("Solo con venta orgánica", key="ads_solo_org",
                                          help="Productos publicitados que además vendieron sin que el comprador haga clic en el anuncio.")
                 G = it
+                if ver_est_ad == "Activos":
+                    G = G[G["estado_ad"] == "active"]
+                elif ver_est_ad == "Pausados":
+                    G = G[G["estado_ad"].isin(["paused", "hold"])]
                 if solo_org:
                     G = G[G["grupo"].isin(G.loc[G["m30_organic_units_quantity"] > 0, "grupo"])]
                 if ver_acc != "Todas":
@@ -2001,13 +2034,14 @@ with tab_ads:
                                     "clics": clics, "unid": unid, "org_u": org_u, "org_m": org_m, "st_meli": st_meli, "st_dep": st_dep,
                                     "cob": (ref / vel_g) if vel_g > 0 and pd.notna(ref) else np.inf,
                                     "sin_stock": int(((d["stock_meli"] <= 0) | (d["stock_dep"] <= 0)).sum()),
-                                    "activos": int((d["estado_ad"] == "active").sum())})
+                                    "activos": int((d["estado_ad"] == "active").sum()),
+                                    "pausados": int(d["estado_ad"].isin(["paused", "hold"]).sum())})
                 _ordk = {"Urgencia": lambda x: (x["p"], -x["cost"]), "Inversión": lambda x: -x["cost"],
                          "Ventas ads": lambda x: -x["ventas"], "Venta orgánica": lambda x: -x["org_m"]}[orden_p]
                 resumen.sort(key=_ordk)
                 MAXG = 60
                 cols_g = "minmax(230px,2.4fr) minmax(190px,1.6fr) 1fr 0.85fr 0.95fr 0.55fr 0.55fr 1fr 0.65fr 0.65fr 0.65fr"
-                cab = ["Modelo", "Acción sugerida", "Talles", "Inversión 30d", "Ventas ads", "ACOS", "CVR", "Venta orgánica", "Stock MeLi", "Depósito", "Cobertura"]
+                cab = ["Modelo", "Acción sugerida", "Talles", "Inversión 30d", "Ventas ads", met_ef, "CVR", "Venta orgánica", "Stock MeLi", "Depósito", "Cobertura"]
                 bloques = ""
                 for r in resumen[:MAXG]:
                     d = r["d"].sort_values("talle", key=lambda s_: s_.map(lambda x: (0, float(x.replace(",", "."))) if x.replace(",", ".").replace(".", "", 1).isdigit() else (1, x)))
@@ -2019,18 +2053,24 @@ with tab_ads:
                     acc_txt = r["acc"] + (f" · {r['n_acc']} talle{'s' if r['n_acc'] > 1 else ''}" if len(d) > 1 and r["acc"] != "Mantener" else "")
                     tl = f"{len(d)}" + (f" · <span style='color:#F87171'>{r['sin_stock']} sin stock</span>" if r["sin_stock"] else "")
                     acos_g = r["cost"] / r["ventas"] * 100 if r["ventas"] else np.nan
+                    ef_g = (fmt_dec(r["ventas"] / r["cost"], 1) + "x" if r["cost"] else "—") if EsR else _fpct(acos_g)
+                    est_txt = f"{r['activos']} activo{'s' if r['activos'] != 1 else ''}" + (f" · <span style='color:#FBBF24'>{r['pausados']} pausado{'s' if r['pausados'] != 1 else ''}</span>" if r["pausados"] else "")
                     cvr_g = r["unid"] / r["clics"] * 100 if r["clics"] else np.nan
-                    celdas = [f"<span class='grp-tit'><img src='{img}'><span><b>{titulo[:46]}</b><small>{r['marca']} · {nombre} · {r['activos']} anuncio{'s' if r['activos'] != 1 else ''} activo{'s' if r['activos'] != 1 else ''}</small></span></span>",
-                              f"<span class='pill {cls}'>{acc_txt}</span>", tl, fmt_ars(r["cost"]), fmt_ars(r["ventas"]), _fpct(acos_g),
+                    celdas = [f"<span class='grp-tit'><img src='{img}'><span><b>{titulo[:46]}</b><small>{r['marca']} · {nombre} · {est_txt}</small></span></span>",
+                              f"<span class='pill {cls}'>{acc_txt}</span>", tl, fmt_ars(r["cost"]), fmt_ars(r["ventas"]), ef_g,
                               _fpct(cvr_g, 1),
                               (fmt_ars(r["org_m"]) if r["org_u"] else "—"),
                               _fn(r["st_meli"]), _fn(r["st_dep"]), _fcob(r["cob"])]
                     fil = ""
                     for _, x in d.iterrows():
                         cx = pill.get(str(x["accion"])[:1], "")
+                        _ea = str(x["estado_ad"])
+                        est_ad_txt = {"active": "<span class='pill ok'>Activo</span>", "paused": "<span class='pill warn'>Pausado</span>",
+                                      "hold": "<span class='pill warn'>Pausado por MeLi</span>"}.get(_ea, _ea)
+                        ef_x = (fmt_dec(x["roas30"], 1) + "x" if pd.notna(x["roas30"]) else "—") if EsR else _fpct(x["acos30"])
                         fil += (f"<tr><td><b>{x['talle']}</b></td><td>{x['sku'] or '—'}</td><td style='text-align:left'><span class='pill {cx}'>{x['accion']}</span></td>"
-                                f"<td>{x['estado_ad']}</td><td style='max-width:200px;overflow:hidden;text-overflow:ellipsis'>{nombres_c.get(x['campaign_id'], x['campaign_id'])}</td>"
-                                f"<td>{fmt_ars(x['m30_cost'])}</td><td>{fmt_ars(x['m30_total_amount'])}</td><td>{_fpct(x['acos30'])}</td>"
+                                f"<td>{est_ad_txt}</td><td style='max-width:200px;overflow:hidden;text-overflow:ellipsis'>{nombres_c.get(x['campaign_id'], x['campaign_id'])}</td>"
+                                f"<td>{fmt_ars(x['m30_cost'])}</td><td>{fmt_ars(x['m30_total_amount'])}</td><td>{ef_x}</td>"
                                 f"<td>{fmt_num(x['m30_clicks'])}</td><td>{_fpct(x['cvr30'], 1)}</td>"
                                 f"<td>{fmt_num(x['m30_direct_units_quantity'])} / {fmt_num(x['m30_indirect_units_quantity'])}</td>"
                                 f"<td>{fmt_num(x['m30_organic_units_quantity'])} · {fmt_ars(x['m30_organic_units_amount'])}</td>"
@@ -2038,7 +2078,7 @@ with tab_ads:
                                 f"<td>{_fn(x['stock_meli'])}</td><td>{_fn(x['stock_dep'])}</td><td>{fmt_dec(x['vel'] * 30, 0)}</td><td>{_fcob(x['cobertura'])}</td>"
                                 f"<td><a href='{x['permalink']}' target='_blank' style='color:#22D3EE'>Ver ↗</a></td></tr>")
                     det = ("<table class='ftable grp-det'><thead><tr><th>Talle</th><th>SKU</th><th style='text-align:left'>Acción</th><th>Anuncio</th><th>Campaña</th>"
-                           "<th>Inversión 30d</th><th>Ventas ads</th><th>ACOS</th><th>Clics</th><th>CVR</th><th>U. directas / indirectas</th><th>Orgánica (u · $)</th><th>Inversión 7d</th><th>Stock MeLi</th><th>Depósito</th>"
+                           f"<th>Inversión 30d</th><th>Ventas ads</th><th>{met_ef}</th><th>Clics</th><th>CVR</th><th>U. directas / indirectas</th><th>Orgánica (u · $)</th><th>Inversión 7d</th><th>Stock MeLi</th><th>Depósito</th>"
                            f"<th>Venta 30d (u)</th><th>Cobertura</th><th></th></tr></thead><tbody>{fil}</tbody></table>")
                     bloques += ("<details class='grp'><summary class='grp-row' style='grid-template-columns:" + cols_g + "'>" +
                                 "".join(f"<div>{c_}</div>" for c_ in celdas) + "</summary>" + det + "</details>")
@@ -2049,7 +2089,7 @@ with tab_ads:
                                "Tocá un modelo para ver todos sus talles. La acción del modelo es la más urgente entre sus talles. Cobertura = días de stock a la velocidad de venta actual.")
                 else:
                     st.info("No hay productos para ese filtro.")
-                exp = T[["marca", "modelo_color", "talle", "item_id", "titulo", "sku", "campaign_id", "estado_ad", "m30_cost", "m30_total_amount", "acos30", "m30_clicks",
+                exp = T[["marca", "modelo_color", "talle", "item_id", "titulo", "sku", "campaign_id", "estado_ad", "m30_cost", "m30_total_amount", "acos30", "roas30", "m30_clicks",
                          "m30_units_quantity", "m30_direct_units_quantity", "m30_indirect_units_quantity", "m30_organic_units_quantity", "m30_organic_units_amount",
                          "cvr30", "stock_meli", "stock_dep", "vel", "cobertura", "accion", "permalink"]].copy()
                 exp["campaign_id"] = exp["campaign_id"].map(lambda x: nombres_c.get(x, x))
