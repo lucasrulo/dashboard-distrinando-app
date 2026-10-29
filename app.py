@@ -2327,18 +2327,114 @@ with tab_cli:
 # ==============================================================================
 # TAB · POST-VENTA MELI (cancelaciones, reclamos y devoluciones) · solo dirección
 # ==============================================================================
-PV_TIPO = {"mediations": "Reclamo", "returns": "Devolución", "return": "Devolución", "cancel_purchase": "Cancelación del comprador",
+# Motivos de reclamo de MeLi (reason name) -> (texto claro, categoría)
+PV_MOTIVOS = {
+    "repentant_buyer": ("Lo recibió bien pero no lo quiere", "Arrepentimiento (ya lo recibió)"),
+    "repentant_beneficiary": ("Lo recibió bien pero no lo quiere", "Arrepentimiento (ya lo recibió)"),
+    "dont_want_it_another_cause_fashion": ("No lo quiere por otro motivo", "Arrepentimiento (ya lo recibió)"),
+    "purchase_no_longer_wanted": ("Ya no quiere la compra", "Arrepentimiento antes de recibir"),
+    "undelivered_repentant_buyer": ("Se arrepintió antes de recibir", "Arrepentimiento antes de recibir"),
+    "undelivered_repentant_buyer_v2": ("Se arrepintió antes de recibir", "Arrepentimiento antes de recibir"),
+    "estimated_delivery_out_of_time": ("No puede esperar la fecha de entrega", "Arrepentimiento antes de recibir"),
+    "change_receiver_address": ("No puede recibir en la dirección que cargó", "Arrepentimiento antes de recibir"),
+    "selected_wrong_product_features": ("Eligió mal las características", "Arrepentimiento antes de recibir"),
+    "other_cancellation": ("Otro motivo de cancelación", "Arrepentimiento antes de recibir"),
+    "other_cancellation_reason": ("Otro motivo de cancelación", "Arrepentimiento antes de recibir"),
+    "undelivered_other": ("Otro motivo (antes de recibir)", "Arrepentimiento antes de recibir"),
+    "different_color_or_size_fashion": ("No es el color, talle o modelo que eligió", "Talle, color o medida"),
+    "different_color_or_size": ("No es el color, tamaño o modelo que eligió", "Talle, color o medida"),
+    "bigger_than_expected_fashion": ("Le quedó grande", "Talle, color o medida"),
+    "smaller_than_expected_fashion": ("Le quedó chico", "Talle, color o medida"),
+    "not_match_size_guide_fashion": ("Las medidas no coinciden con la guía de talles", "Talle, color o medida"),
+    "different_than_published": ("No cumple con lo publicado", "Distinto a lo publicado"),
+    "different_item_other": ("Recibió otro producto", "Distinto a lo publicado"),
+    "fake_different": ("Dice que no es original", "Distinto a lo publicado"),
+    "broken_item_fashion": ("Llegó roto o con fallas", "Dañado, roto o incompleto"),
+    "broken_item": ("Llegó roto o con fallas", "Dañado, roto o incompleto"),
+    "not_working_item": ("No funciona", "Dañado, roto o incompleto"),
+    "damaged_package_broken_item_fashion": ("Embalaje dañado y producto roto", "Dañado, roto o incompleto"),
+    "damaged_package_broken_item": ("Embalaje dañado y producto roto", "Dañado, roto o incompleto"),
+    "damaged_package_empty_box": ("Embalaje dañado y caja vacía", "Dañado, roto o incompleto"),
+    "empty_box": ("Llegó la caja vacía", "Dañado, roto o incompleto"),
+    "missing_item": ("Faltan productos", "Dañado, roto o incompleto"),
+    "missing_accessories": ("Faltan accesorios", "Dañado, roto o incompleto"),
+    "missing_invoice": ("No llegó la factura", "Dañado, roto o incompleto"),
+    "delivered_but_not_receive_package": ("Figura entregado pero no lo recibió", "No lo recibió / problema de entrega"),
+    "product_not_received": ("No recibió el producto", "No lo recibió / problema de entrega"),
+    "delivery_delayed": ("La entrega está demorada", "No lo recibió / problema de entrega"),
+    "delivery_date_was_not_met": ("No se cumplió la fecha de entrega", "No lo recibió / problema de entrega"),
+    "respondent_unanswered": ("El vendedor no le respondió", "Atención del vendedor"),
+    "out_of_stock": ("El vendedor no tiene stock", "Sin stock / no disponible"),
+    "unauthorized_purchase": ("No reconoce la compra", "Compra no reconocida / fraude"),
+    "other_complaint": ("Otro tipo de reclamo", "Otros"),
+    "event_cancelled": ("Se canceló el evento o servicio", "Otros"),
+}
+PV_CAT_ORIGEN = {"Arrepentimiento (ya lo recibió)": "Comprador", "Arrepentimiento antes de recibir": "Comprador",
+                 "Talle, color o medida": "Comprador", "Distinto a lo publicado": "Nosotros", "Dañado, roto o incompleto": "Nosotros",
+                 "No lo recibió / problema de entrega": "Logística", "Atención del vendedor": "Nosotros",
+                 "Sin stock / no disponible": "Nosotros", "Compra no reconocida / fraude": "MercadoLibre", "Otros": "Comprador",
+                 "Cancelada por MeLi sin causa informada": "MercadoLibre", "Envío no entregado / fallido": "Logística",
+                 "Etiqueta no impresa a tiempo": "Nosotros", "Técnico (no es pérdida)": "Técnico", "Pago rechazado (no es venta)": "Pago"}
+PV_COLOR_ORIGEN = {"Comprador": "#38BDF8", "Nosotros": "#F87171", "MercadoLibre": "#FFE600", "Logística": "#A78BFA",
+                   "Técnico": "#64748B", "Pago": "#475569"}
+PV_TIPO = {"returns": "Devolución", "return": "Devolución", "cancel_purchase": "Cancelación antes del envío", "mediations": "Reclamo",
            "cancel_sale": "Cancelación del vendedor", "change": "Cambio", "fulfillment": "Full", "ml_case": "Caso MeLi", "service": "Servicio"}
-PV_ETAPA = {"claim": "Reclamo", "dispute": "Mediación de MeLi", "recontact": "Recontacto", "stale": "Vencido", "none": "—"}
-PV_DEV = {"opened": "Iniciada", "label_generated": "Etiqueta generada", "shipped": "En camino de vuelta", "delivered": "Recibida",
-          "closed": "Cerrada", "not_delivered": "No llegó", "cancelled": "Cancelada", "failed": "Fallida", "expired": "Vencida"}
-PV_COND = {"saleable": "Vendible", "unsaleable": "No vendible", "discard": "Descarte"}
-PV_COLOR_QUIEN = {"Comprador": "#38BDF8", "Vendedor (nosotros)": "#F87171", "MercadoLibre": "#FFE600",
-                  "MercadoLibre (fraude/seguridad)": "#FBBF24", "Envío": "#A78BFA", "Pago no aprobado": "#64748B", "Sin dato": "#94A3B8"}
+PV_ETAPA = {"claim": "Con el vendedor", "dispute": "En mediación de MeLi", "recontact": "Recontacto", "stale": "Vencido", "none": "—"}
+PV_RES = {"item_returned": "Devolvió el producto y se reembolsó", "coverage_decision": "MeLi reembolsó al comprador (protección)",
+          "no_bpp": "Sin cobertura de MeLi", "return_expired": "Venció el plazo para devolver", "product_delivered": "Se entregó el producto",
+          "timeout": "Venció el plazo", "payment_refunded": "Se reintegró el pago", "worked_out_with_seller": "Lo resolvió con nosotros",
+          "return_cancelled": "Se canceló la devolución", "opened_claim_by_mistake": "Abierto por error", "prefered_to_keep_product": "Prefirió quedarse el producto",
+          "seller_did_not_help": "Consideró que no lo ayudamos", "seller_asked_to_close_claim": "Pedimos cerrar el reclamo",
+          "already_shipped": "Ya estaba despachado", "user_risk": "Riesgo del usuario", "other": "Otro", "": "Abierto (sin resolver)"}
+PV_DEV = {"opened": "Iniciada", "label_generated": "Etiqueta generada (no la despachó aún)", "shipped": "En camino de vuelta",
+          "delivered": "Recibida en el depósito", "closed": "Cerrada", "not_delivered": "No llegó al depósito", "cancelled": "Cancelada",
+          "failed": "Fallida", "expired": "Venció (no la envió)"}
 
 
 def _pv_fecha(s):
     return pd.to_datetime(s, errors="coerce", format="mixed", utc=True).dt.tz_convert(ZONA_AR)
+
+
+def _pv_motivo(nombre, detalle=""):
+    n = str(nombre or "").strip()
+    if n in PV_MOTIVOS:
+        return PV_MOTIVOS[n]
+    d = str(detalle or "").strip()
+    if d and d.lower() not in ("llegó bien", "otro motivo") and not any(x in d.lower() for x in ("não", "recebi")):
+        return d, "Otros"
+    return (n.replace("_", " ").capitalize() if n else "Sin motivo informado"), "Otros"
+
+
+def _pv_clasificar(r):
+    """Cancelación de MeLi -> (categoría, motivo claro, origen, cuándo, es_pérdida)"""
+    g, cod, pago = str(r.get("cancel_grupo") or ""), str(r.get("cancel_codigo") or ""), str(r.get("pago_estado") or "")
+    entregada = bool(r.get("entregada"))
+    cuando = "Después de entregar" if entregada else "Antes de entregar"
+    if pago in ("rejected", "cancelled", "in_process", "pending", "") and g not in ("seller", "mediations"):
+        return "Pago rechazado (no es venta)", "El pago no se aprobó", "Pago", cuando, False
+    if g in ("buyer", "mediations"):
+        if pd.notna(r.get("cl_motivo")) and str(r.get("cl_motivo")):
+            mot, cat = _pv_motivo(r.get("cl_motivo"), r.get("cl_detalle"))
+        else:
+            mot, cat = (("Se arrepintió antes de recibir", "Arrepentimiento antes de recibir") if g == "buyer"
+                        else ("Reclamo / devolución (sin detalle)", "Otros"))
+        return cat, mot, PV_CAT_ORIGEN.get(cat, "Comprador"), cuando, True
+    if g == "seller":
+        mot = "Sin stock" if "out_of_stock" in cod else "Producto no disponible"
+        return "Sin stock / no disponible", mot, "Nosotros", cuando, True
+    if g == "shipment":
+        if "unprinted_label" in cod:
+            return "Etiqueta no impresa a tiempo", "No se imprimió/despachó la etiqueta a tiempo", "Nosotros", cuando, True
+        if "creation" in cod:
+            return "Técnico (no es pérdida)", "Falla al crear el envío", "Técnico", cuando, False
+        return "Envío no entregado / fallido", "El envío no se pudo entregar", "Logística", cuando, True
+    if g == "fraud":
+        return "Compra no reconocida / fraude", "MeLi detectó fraude", "MercadoLibre", cuando, True
+    if g == "internal":
+        if cod.startswith("pack_"):
+            return "Técnico (no es pérdida)", "MeLi dividió el carrito en varias órdenes", "Técnico", cuando, False
+        return "Cancelada por MeLi sin causa informada", "MeLi canceló sin informar la causa", "MercadoLibre", cuando, True
+    return "Otros", (str(r.get("cancel_motivo") or "") or "Sin motivo informado"), "MercadoLibre", cuando, True
 
 
 if tab_pv is not None:
@@ -2346,11 +2442,53 @@ if tab_pv is not None:
         pv_c = load_aux("meli_cancelaciones.csv")
         pv_r = load_aux("meli_reclamos.csv")
         if pv_c.empty and pv_r.empty:
-            st.info("Todavía no hay datos de post-venta. Se generan con el workflow diario (paso 'Post-venta MercadoLibre'). "
-                    "Si el log muestra 401/403, hay que habilitar en la app de MeLi el permiso de reclamos / post venta.")
+            st.info("Todavía no hay datos de post-venta. Se generan con el workflow diario (paso 'Post-venta MercadoLibre').")
         else:
+            # ---------- reclamos (para motivos) ----------
+            R = pv_r.copy() if not pv_r.empty else pd.DataFrame(columns=["marca", "claim_id", "orden_meli", "fecha"])
+            for c_ in ["tipo", "etapa", "estado", "motivo", "motivo_detalle", "res_motivo", "res_beneficiado", "dev_estado", "dev_dinero", "titulos", "skus"]:
+                R[c_] = R[c_].fillna("").astype(str) if c_ in R.columns else ""
+            R["fecha"] = _pv_fecha(R["fecha"])
+            R["dia"] = R["fecha"].dt.date
+            R["monto"] = pd.to_numeric(R["monto"], errors="coerce") if "monto" in R.columns else np.nan
+            R["orden_meli"] = pd.to_numeric(R["orden_meli"], errors="coerce")
+            _mc = [_pv_motivo(n, d) for n, d in zip(R["motivo"], R["motivo_detalle"])]
+            R["motivo_es"] = [m_[0] for m_ in _mc]
+            R["categoria"] = [m_[1] for m_ in _mc]
+            R["tipo_es"] = R["tipo"].map(PV_TIPO).fillna(R["tipo"])
+            R["etapa_es"] = R["etapa"].map(PV_ETAPA).fillna(R["etapa"])
+            R["resolucion_es"] = R["res_motivo"].map(PV_RES).fillna(R["res_motivo"].str.replace("_", " "))
+            R["a_favor"] = np.select([R["res_beneficiado"].str.contains("complainant") & R["res_beneficiado"].str.contains("respondent"),
+                                      R["res_beneficiado"].str.contains("complainant"), R["res_beneficiado"].str.contains("respondent")],
+                                     ["Parcial (ambos)", "Comprador", "Nosotros"], default="Abierto")
+            R["cubierto"] = R["res_cobertura"].astype(str).str.lower().isin(["true", "1"]) if "res_cobertura" in R.columns else False
+            R["dev_es"] = R["dev_estado"].map(PV_DEV).fillna(R["dev_estado"])
+
+            # ---------- cancelaciones = toda venta revertida (incluye devoluciones reembolsadas) ----------
+            C = pv_c.copy() if not pv_c.empty else pd.DataFrame(columns=["marca", "orden_meli", "fecha", "monto", "cancel_grupo", "cancel_codigo", "pago_estado", "tags"])
+            C["fecha"] = _pv_fecha(C["fecha"])
+            C["dia"] = C["fecha"].dt.date
+            C["monto"] = pd.to_numeric(C["monto"], errors="coerce").fillna(0)
+            C["unidades"] = pd.to_numeric(C.get("unidades", 0), errors="coerce").fillna(0)
+            C["orden_meli"] = pd.to_numeric(C["orden_meli"], errors="coerce")
+            C["pago_estado"] = C["pago_estado"].fillna("").astype(str).str.lower()
+            C["entregada"] = C["tags"].fillna("").astype(str).str.split(",").apply(lambda t: "delivered" in t)
+            ult_cl = R.dropna(subset=["orden_meli"]).sort_values("fecha").drop_duplicates("orden_meli", keep="last")
+            C = C.merge(ult_cl[["orden_meli", "motivo", "motivo_detalle", "tipo_es", "claim_id"]].rename(
+                columns={"motivo": "cl_motivo", "motivo_detalle": "cl_detalle", "tipo_es": "cl_tipo"}), on="orden_meli", how="left")
+            if len(C):
+                _cl = C.apply(_pv_clasificar, axis=1, result_type="expand")
+                _cl.columns = ["categoria", "motivo_es", "origen", "cuando", "perdida"]
+                C = pd.concat([C, _cl], axis=1)
+            else:
+                for c_ in ["categoria", "motivo_es", "origen", "cuando"]:
+                    C[c_] = ""
+                C["perdida"] = False
+            C["producto"] = C["titulos"].fillna("").astype(str).str.split(" | ", regex=False).str[0] if "titulos" in C.columns else ""
+            C["sku1"] = C["skus"].fillna("").astype(str).str.split(" | ", regex=False).str[0] if "skus" in C.columns else ""
+
             # ---------- filtros ----------
-            marcas_pv_disp = [m for m in MARCAS_BASE if m in set(pv_c.get("marca", pd.Series(dtype=str))) | set(pv_r.get("marca", pd.Series(dtype=str)))]
+            marcas_pv_disp = [m for m in MARCAS_BASE if m in set(C["marca"]) | set(R["marca"])]
             q1, q2 = st.columns([1.6, 1])
             with q1:
                 marcas_pv = st.pills("Marcas", marcas_pv_disp, selection_mode="multi", default=marcas_pv_disp, key="pv_marcas") or marcas_pv_disp
@@ -2359,292 +2497,288 @@ if tab_pv is not None:
             pv_ini = datetime(2026, 9, 1).date() if per_pv == "Desde 1/09" else hoy - timedelta(days=int(per_pv[:-1]) - 1)
             nd_pv = (hoy - pv_ini).days + 1
             pv_ini_prev = pv_ini - timedelta(days=nd_pv)
-            html(f"<div class='hero-sub'>📅 <b>{pv_ini:%d/%m/%Y} → {hoy:%d/%m/%Y}</b> · cancelaciones por fecha de la orden, reclamos por fecha del reclamo · "
-                 "datos de MeLi actualizados 2 veces por día.</div>")
+            html(f"<div class='hero-sub'>📅 <b>{pv_ini:%d/%m/%Y} → {hoy:%d/%m/%Y}</b> · ventas revertidas según la fecha de la compra · "
+                 "reclamos según la fecha en que se abrieron · se actualiza 2 veces por día.</div>")
+            Cm, Rm = C[C["marca"].isin(marcas_pv)], R[R["marca"].isin(marcas_pv)]
+            Cp = Cm[(Cm["dia"] >= pv_ini) & (Cm["dia"] <= hoy)]
+            Cpp = Cm[(Cm["dia"] >= pv_ini_prev) & (Cm["dia"] < pv_ini)]
+            Rp = Rm[(Rm["dia"] >= pv_ini) & (Rm["dia"] <= hoy)]
+            Lp, Lpp = Cp[Cp["perdida"]], Cpp[Cpp["perdida"]]          # ventas realmente perdidas
 
-            # ---------- preparar cancelaciones ----------
-            C = pv_c.copy() if not pv_c.empty else pd.DataFrame(columns=["marca", "orden_meli", "fecha", "monto", "unidades", "cancel_por_txt",
-                                                                       "cancel_motivo", "cancel_codigo", "pago_estado", "titulos", "skus"])
-            if not C.empty:
-                C["fecha"] = _pv_fecha(C["fecha"])
-                C["dia"] = C["fecha"].dt.date
-                C["monto"] = pd.to_numeric(C["monto"], errors="coerce").fillna(0)
-                C["unidades"] = pd.to_numeric(C["unidades"], errors="coerce").fillna(0)
-                C["pago_estado"] = C["pago_estado"].fillna("").astype(str).str.lower()
-                C["quien"] = C["cancel_por_txt"].fillna("Sin dato").astype(str)
-                # Si el pago nunca se aprobó no es una venta perdida: se separa
-                no_pago = C["pago_estado"].isin(["rejected", "cancelled", "sin pago", "pending", "in_process", ""]) & ~C["quien"].isin(["Vendedor (nosotros)"])
-                C.loc[no_pago, "quien"] = "Pago no aprobado"
-                C["motivo"] = C["cancel_motivo"].fillna("").astype(str).str.strip()
-                C.loc[C["motivo"] == "", "motivo"] = C.loc[C["motivo"] == "", "cancel_codigo"].fillna("").astype(str)
-                C.loc[C["motivo"].str.strip() == "", "motivo"] = "Sin motivo informado"
-                C.loc[C["quien"] == "Pago no aprobado", "motivo"] = "Pago rechazado / no acreditado"
-                C["real"] = C["quien"] != "Pago no aprobado"
-            Cm = C[C["marca"].isin(marcas_pv)] if not C.empty else C
-            Cp = Cm[(Cm["dia"] >= pv_ini) & (Cm["dia"] <= hoy)] if not Cm.empty else Cm
-            Cpp = Cm[(Cm["dia"] >= pv_ini_prev) & (Cm["dia"] < pv_ini)] if not Cm.empty else Cm
-
-            # ---------- preparar reclamos ----------
-            R = pv_r.copy() if not pv_r.empty else pd.DataFrame(columns=["marca", "claim_id", "tipo", "etapa", "estado", "fecha", "monto", "unidades",
-                                                                       "motivo", "res_beneficiado", "res_cobertura", "dev_estado", "dev_dinero",
-                                                                       "dev_condicion", "titulos", "skus", "orden_meli", "res_motivo"])
-            if not R.empty:
-                for c_ in ["motivo", "res_beneficiado", "dev_estado", "dev_dinero", "dev_condicion", "res_motivo", "tipo", "etapa", "estado", "titulos", "skus"]:
-                    R[c_] = R[c_].fillna("").astype(str) if c_ in R.columns else ""
-                R["fecha"] = _pv_fecha(R["fecha"])
-                R["dia"] = R["fecha"].dt.date
-                R["monto"] = pd.to_numeric(R.get("monto", 0), errors="coerce").fillna(0)
-                R["unidades"] = pd.to_numeric(R.get("unidades", 0), errors="coerce").fillna(0)
-                R["tipo_txt"] = R["tipo"].map(PV_TIPO).fillna(R["tipo"])
-                R["etapa_txt"] = R["etapa"].map(PV_ETAPA).fillna(R["etapa"])
-                R["motivo"] = R["motivo"].where(R["motivo"] != "", R.get("reason_id", "").astype(str) if "reason_id" in R.columns else "Sin motivo")
-                R["es_dev"] = (R["dev_estado"] != "") | R["res_motivo"].str.contains("return", case=False)
-                R["dev_txt"] = R["dev_estado"].map(PV_DEV).fillna(R["dev_estado"])
-                R["a_favor"] = np.where(R["res_beneficiado"].str.contains("complainant"), "Comprador",
-                                        np.where(R["res_beneficiado"].str.contains("respondent"), "Nosotros", np.where(R["estado"] == "closed", "Sin dato", "Abierto")))
-                R["cubierto"] = R["res_cobertura"].astype(str).str.lower().isin(["true", "1"]) if "res_cobertura" in R.columns else False
-                # Dinero perdido por el reclamo: reembolso al comprador no cubierto por MeLi
-                R["perdido"] = np.where(((R["dev_dinero"] == "refunded") | ((R["a_favor"] == "Comprador") & (R["estado"] == "closed"))) & ~R["cubierto"], R["monto"], 0)
-            Rm = R[R["marca"].isin(marcas_pv)] if not R.empty else R
-            Rp = Rm[(Rm["dia"] >= pv_ini) & (Rm["dia"] <= hoy)] if not Rm.empty else Rm
-            Rpp = Rm[(Rm["dia"] >= pv_ini_prev) & (Rm["dia"] < pv_ini)] if not Rm.empty else Rm
-
-            # ---------- base: órdenes y venta MeLi del período ----------
+            # ---------- base: órdenes y venta MeLi ----------
             def _base_meli(x0, x1):
                 b = base_m[(base_m["canal"] == "MercadoLibre") & base_m["marca"].astype(str).isin(marcas_pv) & (base_m["dia"] >= x0) & (base_m["dia"] <= x1)]
                 if b.empty:
-                    return pd.DataFrame(columns=["marca", "ordenes", "venta", "unidades"])
+                    return pd.DataFrame(columns=["ordenes", "venta", "unidades"])
                 key = "orden_meli" if "orden_meli" in b.columns else "id_pedido"
                 o = b.drop_duplicates(key)
                 monto = "total_orden_meli" if "total_orden_meli" in o.columns else "total_pedido"
                 g = o.groupby(o["marca"].astype(str)).agg(ordenes=(key, "nunique"), venta=(monto, "sum"))
                 g["unidades"] = b.groupby(b["marca"].astype(str))["cantidad"].sum()
                 return g
-            Bm = _base_meli(pv_ini, hoy)
-            Bmp = _base_meli(pv_ini_prev, pv_ini - timedelta(days=1))
+            Bm, Bmp = _base_meli(pv_ini, hoy), _base_meli(pv_ini_prev, pv_ini - timedelta(days=1))
             n_ord, venta_t = float(Bm["ordenes"].sum()), float(Bm["venta"].sum())
-            n_ord_p = float(Bmp["ordenes"].sum())
+            n_ord_p, venta_p = float(Bmp["ordenes"].sum()), float(Bmp["venta"].sum())
 
-            def _kp(dfc, dfr, nord, vta):
-                cr = dfc[dfc["real"]] if len(dfc) else dfc
-                nos = cr[cr["quien"] == "Vendedor (nosotros)"] if len(cr) else cr
-                dev = dfr[dfr["es_dev"]] if len(dfr) else dfr
-                return {"canc": len(cr), "canc_m": float(cr["monto"].sum()) if len(cr) else 0.0,
-                        "canc_pct": len(cr) / nord * 100 if nord else 0, "nos": len(nos), "nos_m": float(nos["monto"].sum()) if len(nos) else 0.0,
-                        "recl": len(dfr), "recl_pct": len(dfr) / nord * 100 if nord else 0,
-                        "dev": len(dev), "dev_pct": len(dev) / nord * 100 if nord else 0,
-                        "perd_r": float(dfr["perdido"].sum()) if len(dfr) else 0.0,
-                        "abiertos": int((dfr["estado"] != "closed").sum()) if len(dfr) else 0}
-            K = _kp(Cp, Rp, n_ord, venta_t)
-            KP = _kp(Cpp, Rpp, n_ord_p, 0) if n_ord_p else None
+            def _k(L, nord, vta):
+                antes, desp = L[L["cuando"] == "Antes de entregar"], L[L["cuando"] == "Después de entregar"]
+                nos = L[L["origen"] == "Nosotros"]
+                return {"n": len(L), "m": float(L["monto"].sum()), "tasa": len(L) / nord * 100 if nord else 0,
+                        "pct_v": float(L["monto"].sum()) / vta * 100 if vta else 0,
+                        "an": len(antes), "am": float(antes["monto"].sum()), "dn": len(desp), "dm": float(desp["monto"].sum()),
+                        "nn": len(nos), "nm": float(nos["monto"].sum())}
+            K, KP = _k(Lp, n_ord, venta_t), (_k(Lpp, n_ord_p, venta_p) if n_ord_p else None)
             pvp = (lambda x: KP[x]) if KP else (lambda x: None)
-            perdido_t = K["canc_m"] + K["perd_r"]
 
             # ---------- KPIs ----------
-            seccion("Post-venta MercadoLibre", "Cuánto se pierde después de vender",
-                    f"Cancelaciones, reclamos y devoluciones sobre {fmt_num(n_ord)} órdenes de MeLi del período · comparado con los {nd_pv} días anteriores.")
+            seccion("Post-venta MercadoLibre", "Ventas que se revierten después de vender",
+                    f"Sobre {fmt_num(n_ord)} órdenes y {fmt_compact(venta_t)} vendidos en MeLi en el período · comparado con los {nd_pv} días anteriores. "
+                    "Una venta revertida es una orden cancelada o devuelta con reembolso al comprador.")
             kk = st.columns(4)
-            kk[0].markdown(kpi_card("Venta perdida post-venta", fmt_kpi(perdido_t), "",
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(perdido_t / venta_t * 100 if venta_t else 0)}% de la venta MeLi</span></div>"
-                                    f"<div class='split-legend' style='margin-top:6px'><span>Cancelado {fmt_compact(K['canc_m'])}</span><span>Reembolsado {fmt_compact(K['perd_r'])}</span></div>",
+            kk[0].markdown(kpi_card("Facturación revertida", fmt_kpi(K["m"]), delta_html(K["pct_v"], pvp("pct_v"), invert=True, pp=True, cap="% de la venta vs anterior"),
+                                    f"<div class='split-legend' style='margin-top:10px'><span><b>{fmt_dec(K['pct_v'])}%</b> de la venta MeLi</span></div>"
+                                    f"<div class='split-legend' style='margin-top:6px'><span>Antes de entregar {fmt_compact(K['am'])}</span><span>Después {fmt_compact(K['dm'])}</span></div>",
                                     "#EF4444"), unsafe_allow_html=True)
-            kk[1].markdown(kpi_card("Cancelaciones", fmt_num(K["canc"]), delta_html(K["canc_pct"], pvp("canc_pct"), invert=True, pp=True, cap="tasa vs período anterior"),
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(K['canc_pct'])}% de las órdenes</span><span>{fmt_compact(K['canc_m'])}</span></div>",
-                                    "#F87171"), unsafe_allow_html=True)
-            kk[2].markdown(kpi_card("Canceladas por nosotros", fmt_num(K["nos"]), delta_html(K["nos"], pvp("nos"), invert=True),
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(K['nos'] / K['canc'] * 100 if K['canc'] else 0)}% de las cancelaciones</span>"
-                                    f"<span>{fmt_compact(K['nos_m'])} evitables</span></div>", "#FB923C"), unsafe_allow_html=True)
-            kk[3].markdown(kpi_card("Reclamos", fmt_num(K["recl"]), delta_html(K["recl_pct"], pvp("recl_pct"), invert=True, pp=True, cap="tasa vs período anterior"),
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(K['recl_pct'], 2)}% de las órdenes</span>"
-                                    f"<span>{fmt_num(K['abiertos'])} abiertos</span></div>", "#FBBF24"), unsafe_allow_html=True)
+            kk[1].markdown(kpi_card("Ventas revertidas", fmt_num(K["n"]), delta_html(K["tasa"], pvp("tasa"), invert=True, pp=True, cap="tasa vs anterior"),
+                                    f"<div class='split-legend' style='margin-top:10px'><span><b>{fmt_dec(K['tasa'])}%</b> de las órdenes</span></div>", "#F87171"), unsafe_allow_html=True)
+            kk[2].markdown(kpi_card("Antes de entregar", fmt_num(K["an"]), delta_html(K["an"], pvp("an"), invert=True),
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_compact(K['am'])}</span>"
+                                    f"<span>{fmt_dec(K['an'] / n_ord * 100 if n_ord else 0)}% de las órdenes</span></div>"
+                                    "<div class='split-legend' style='margin-top:6px'><span>cancelaciones: arrepentimiento, stock, envío</span></div>", "#38BDF8"), unsafe_allow_html=True)
+            kk[3].markdown(kpi_card("Después de entregar", fmt_num(K["dn"]), delta_html(K["dn"], pvp("dn"), invert=True),
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_compact(K['dm'])}</span>"
+                                    f"<span>{fmt_dec(K['dn'] / n_ord * 100 if n_ord else 0)}% de las órdenes</span></div>"
+                                    "<div class='split-legend' style='margin-top:6px'><span>devoluciones con reembolso</span></div>", "#A78BFA"), unsafe_allow_html=True)
             st.write("")
             kk = st.columns(4)
-            n_fav_c = int((Rp["a_favor"] == "Comprador").sum()) if len(Rp) else 0
-            n_cerr = int((Rp["estado"] == "closed").sum()) if len(Rp) else 0
-            kk[0].markdown(kpi_card("Devoluciones", fmt_num(K["dev"]), delta_html(K["dev_pct"], pvp("dev_pct"), invert=True, pp=True, cap="tasa vs período anterior"),
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(K['dev_pct'], 2)}% de las órdenes</span></div>", "#A78BFA", sm=True), unsafe_allow_html=True)
-            kk[1].markdown(kpi_card("Reembolsado por reclamos", fmt_kpi(K["perd_r"]), "",
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(int(Rp['cubierto'].sum()) if len(Rp) else 0)} cubiertos por MeLi (no se pierden)</span></div>",
-                                    "#F472B6", sm=True), unsafe_allow_html=True)
-            kk[2].markdown(kpi_card("Resueltos a favor del comprador", f"{fmt_dec(n_fav_c / n_cerr * 100 if n_cerr else 0)}%", "",
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(n_fav_c)} de {fmt_num(n_cerr)} cerrados</span></div>", "#38BDF8", sm=True), unsafe_allow_html=True)
-            n_disp = int((Rp["etapa"] == "dispute").sum()) if len(Rp) else 0
-            kk[3].markdown(kpi_card("Escalados a mediación", fmt_num(n_disp), "",
-                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(n_disp / K['recl'] * 100 if K['recl'] else 0)}% de los reclamos · afectan la reputación</span></div>",
+            n_ab = int((Rp["estado"] != "closed").sum())
+            n_med = int((Rp["etapa"] == "dispute").sum())
+            n_cerr = int((Rp["estado"] == "closed").sum())
+            n_fav = int((Rp["a_favor"] == "Comprador").sum())
+            kk[0].markdown(kpi_card("Evitables (responsabilidad nuestra)", fmt_kpi(K["nm"]), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(K['nn'])} ventas</span>"
+                                    f"<span>{fmt_dec(K['nm'] / K['m'] * 100 if K['m'] else 0)}% de lo revertido</span></div>"
+                                    "<div class='split-legend' style='margin-top:6px'><span>sin stock, distinto a lo publicado, dañado, etiqueta</span></div>",
+                                    "#FB923C", sm=True), unsafe_allow_html=True)
+            kk[1].markdown(kpi_card("Reclamos del período", fmt_num(len(Rp)), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(len(Rp) / n_ord * 100 if n_ord else 0, 2)}% de las órdenes</span>"
+                                    f"<span>{fmt_num(n_ab)} abiertos hoy</span></div>", "#FBBF24", sm=True), unsafe_allow_html=True)
+            kk[2].markdown(kpi_card("Escalados a mediación de MeLi", fmt_num(n_med), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(n_med / len(Rp) * 100 if len(Rp) else 0)}% de los reclamos · impactan en la reputación</span></div>",
                                     "#FFE600", sm=True), unsafe_allow_html=True)
+            kk[3].markdown(kpi_card("Resueltos a favor del comprador", f"{fmt_dec(n_fav / n_cerr * 100 if n_cerr else 0)}%", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(n_fav)} de {fmt_num(n_cerr)} cerrados</span>"
+                                    f"<span>{fmt_num(int(Rp['cubierto'].sum()))} con protección de MeLi</span></div>", "#38BDF8", sm=True), unsafe_allow_html=True)
+            n_tec = int((~Cp["perdida"]).sum())
+            if n_tec:
+                st.caption(f"No se cuentan como venta perdida {fmt_num(n_tec)} órdenes: pagos rechazados ({fmt_num(int((Cp['origen'] == 'Pago').sum()))}) "
+                           f"y casos técnicos de MeLi, como carritos divididos ({fmt_num(int((Cp['origen'] == 'Técnico').sum()))}).")
+
+            # ---------- POR QUÉ ----------
+            seccion("Motivos", "¿Por qué se revierten las ventas?",
+                    "Cada venta revertida con su motivo real: el que eligió el comprador al cancelar o reclamar, o la causa que informa MeLi.")
+            if Lp.empty:
+                st.info("Sin ventas revertidas en el período.")
+            else:
+                g1, g2 = st.columns([1.7, 1])
+                with g1:
+                    ca = Lp.groupby(["categoria", "cuando"]).agg(n=("orden_meli", "count"), monto=("monto", "sum")).reset_index()
+                    orden_cat = Lp.groupby("categoria")["monto"].sum().sort_values(ascending=False).index.tolist()
+                    fig = px.bar(ca, y="categoria", x="monto", color="cuando", orientation="h", title="Facturación revertida por motivo",
+                                 category_orders={"categoria": orden_cat}, custom_data=["n"],
+                                 color_discrete_map={"Antes de entregar": "#38BDF8", "Después de entregar": "#A78BFA"})
+                    fig.update_traces(marker_line_width=0, hovertemplate="%{y}<br>$%{x:,.0f} · %{customdata[0]} ventas<extra></extra>")
+                    fig.update_layout(xaxis_title="", yaxis_title="", barmode="stack", legend_title_text="")
+                    fig = estilo(fig, 60 + 38 * max(5, len(orden_cat)))
+                    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=90))
+                    st.plotly_chart(fig, width="stretch")
+                with g2:
+                    og = Lp.groupby("origen").agg(n=("orden_meli", "count"), monto=("monto", "sum")).reset_index().sort_values("monto", ascending=False)
+                    fig = go.Figure(go.Pie(labels=og["origen"], values=og["monto"], hole=0.62, sort=False, textinfo="percent+label",
+                                           marker=dict(colors=[PV_COLOR_ORIGEN.get(x, "#94A3B8") for x in og["origen"]]),
+                                           customdata=og["n"], hovertemplate="%{label}<br>$%{value:,.0f} · %{customdata} ventas<extra></extra>"))
+                    fig.update_layout(title="¿De quién depende?", showlegend=False,
+                                      annotations=[dict(text=fmt_compact(K["m"]), showarrow=False, font=dict(size=20, color="#F8FAFC"))])
+                    st.plotly_chart(estilo(fig, 60 + 38 * max(5, len(orden_cat))), width="stretch")
+                # tabla categoría -> motivo
+                dm = Lp.groupby(["categoria", "origen", "motivo_es"]).agg(n=("orden_meli", "count"), monto=("monto", "sum"),
+                                                                       antes=("cuando", lambda s_: (s_ == "Antes de entregar").sum())).reset_index()
+                tot_cat = dm.groupby("categoria")["monto"].sum()
+                dm["_o"] = dm["categoria"].map(tot_cat)
+                dm = dm.sort_values(["_o", "monto"], ascending=False)
+                filas, ult = "", None
+                for _, r_ in dm.iterrows():
+                    nueva = r_["categoria"] != ult
+                    ult = r_["categoria"]
+                    cat_txt = (f"<b>{r_['categoria']}</b><br><small style='color:{PV_COLOR_ORIGEN.get(r_['origen'], '#94A3B8')}'>● {r_['origen']}</small>" if nueva else "")
+                    tr_attr = ' style="border-top:1px solid var(--border)"' if nueva else ""
+                    filas += (f"<tr{tr_attr}><td style='text-align:left;white-space:normal'>{cat_txt}</td>"
+                              f"<td style='text-align:left;white-space:normal'>{r_['motivo_es']}</td><td>{fmt_num(r_['n'])}</td>"
+                              f"<td>{fmt_dec(r_['n'] / K['n'] * 100 if K['n'] else 0)}%</td><td>{fmt_ars(r_['monto'])}</td>"
+                              f"<td>{fmt_num(r_['antes'])} / {fmt_num(r_['n'] - r_['antes'])}</td></tr>")
+                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Motivo</th><th style='text-align:left'>Detalle</th>"
+                     "<th>Ventas</th><th>% del total</th><th>Facturación</th><th>Antes / después de entregar</th></tr></thead>"
+                     f"<tbody>{filas}</tbody></table></div>")
 
             # ---------- POR MARCA ----------
-            seccion("Por marca", "Cancelaciones, reclamos y devoluciones por marca",
-                    "Tasas sobre las órdenes de MeLi de cada marca en el período. 'Pago no aprobado' no cuenta como cancelación.")
+            seccion("Por marca", "Ventas revertidas por marca", "Tasas sobre las órdenes de MeLi de cada marca en el período.")
             filas = ""
-            tot = {"o": 0, "v": 0, "c": 0, "cm": 0, "n": 0, "cb": 0, "r": 0, "d": 0, "pr": 0}
+            tot = dict(o=0, v=0, n=0, m=0, an=0, dn=0, nm=0, r=0, ab=0)
             for m_ in marcas_pv:
                 o_ = float(Bm["ordenes"].get(m_, 0)) if len(Bm) else 0
                 v_ = float(Bm["venta"].get(m_, 0)) if len(Bm) else 0
-                cm_ = Cp[(Cp["marca"] == m_) & Cp["real"]] if len(Cp) else Cp
-                rm_ = Rp[Rp["marca"] == m_] if len(Rp) else Rp
-                c_n, c_m = len(cm_), float(cm_["monto"].sum()) if len(cm_) else 0
-                n_n = int((cm_["quien"] == "Vendedor (nosotros)").sum()) if len(cm_) else 0
-                b_n = int((cm_["quien"] == "Comprador").sum()) if len(cm_) else 0
-                r_n = len(rm_)
-                d_n = int(rm_["es_dev"].sum()) if len(rm_) else 0
-                p_r = float(rm_["perdido"].sum()) if len(rm_) else 0
-                perd = c_m + p_r
-                tc = c_n / o_ * 100 if o_ else 0
-                cls = "ok" if tc < 3 else ("warn" if tc < 6 else "bad")
+                L_ = Lp[Lp["marca"] == m_]
+                R_ = Rp[Rp["marca"] == m_]
+                n_, mm_ = len(L_), float(L_["monto"].sum())
+                an_, dn_ = int((L_["cuando"] == "Antes de entregar").sum()), int((L_["cuando"] == "Después de entregar").sum())
+                nm_ = float(L_.loc[L_["origen"] == "Nosotros", "monto"].sum())
+                ab_ = int((R_["estado"] != "closed").sum())
+                top = L_.groupby("categoria")["monto"].sum().sort_values(ascending=False)
+                tc = n_ / o_ * 100 if o_ else 0
+                cls = "ok" if tc < 5 else ("warn" if tc < 10 else "bad")
                 filas += (f"<tr><td class='strong'><span class='dot' style='background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></span>{m_}</td>"
-                          f"<td>{fmt_num(o_)}</td><td class='sep'>{fmt_num(c_n)}</td><td><span class='pill {cls}'>{fmt_dec(tc)}%</span></td>"
-                          f"<td>{fmt_num(n_n)}</td><td>{fmt_num(b_n)}</td><td>{fmt_ars(c_m)}</td>"
-                          f"<td class='sep'>{fmt_num(r_n)}</td><td>{fmt_dec(r_n / o_ * 100 if o_ else 0, 2)}%</td><td>{fmt_num(d_n)}</td>"
-                          f"<td>{fmt_dec(d_n / o_ * 100 if o_ else 0, 2)}%</td><td>{fmt_ars(p_r)}</td>"
-                          f"<td class='sep strong' style='color:#F87171'>{fmt_ars(perd)}</td><td>{fmt_dec(perd / v_ * 100 if v_ else 0)}%</td></tr>")
-                for k_, v__ in zip(["o", "v", "c", "cm", "n", "cb", "r", "d", "pr"], [o_, v_, c_n, c_m, n_n, b_n, r_n, d_n, p_r]):
-                    tot[k_] += v__
-            pt = tot["cm"] + tot["pr"]
-            filas += (f"<tr class='total'><td>Total</td><td>{fmt_num(tot['o'])}</td><td class='sep'>{fmt_num(tot['c'])}</td>"
-                      f"<td>{fmt_dec(tot['c'] / tot['o'] * 100 if tot['o'] else 0)}%</td><td>{fmt_num(tot['n'])}</td><td>{fmt_num(tot['cb'])}</td><td>{fmt_ars(tot['cm'])}</td>"
-                      f"<td class='sep'>{fmt_num(tot['r'])}</td><td>{fmt_dec(tot['r'] / tot['o'] * 100 if tot['o'] else 0, 2)}%</td><td>{fmt_num(tot['d'])}</td>"
-                      f"<td>{fmt_dec(tot['d'] / tot['o'] * 100 if tot['o'] else 0, 2)}%</td><td>{fmt_ars(tot['pr'])}</td>"
-                      f"<td class='sep'>{fmt_ars(pt)}</td><td>{fmt_dec(pt / tot['v'] * 100 if tot['v'] else 0)}%</td></tr>")
-            html("<div class='tbl-wrap'><table class='ftable compact'><thead>"
-                 "<tr class='grp-h'><th></th><th></th><th colspan='5' class='sep' style='text-align:center;color:#F87171'>Cancelaciones</th>"
-                 "<th colspan='5' class='sep' style='text-align:center;color:#FBBF24'>Reclamos y devoluciones</th>"
-                 "<th colspan='2' class='sep' style='text-align:center;color:#EF4444'>Pérdida</th></tr>"
-                 "<tr><th>Marca</th><th>Órdenes</th><th class='sep'>Cant.</th><th>Tasa</th><th>Nosotros</th><th>Comprador</th><th>Monto</th>"
-                 "<th class='sep'>Reclamos</th><th>Tasa</th><th>Devoluc.</th><th>Tasa</th><th>Reembolsado</th>"
-                 f"<th class='sep'>Total perdido</th><th>% venta</th></tr></thead><tbody>{filas}</tbody></table></div>")
+                          f"<td>{fmt_num(o_)}</td><td class='sep'>{fmt_num(n_)}</td><td><span class='pill {cls}'>{fmt_dec(tc)}%</span></td>"
+                          f"<td>{fmt_num(an_)}</td><td>{fmt_num(dn_)}</td><td class='strong' style='color:#F87171'>{fmt_ars(mm_)}</td>"
+                          f"<td>{fmt_dec(mm_ / v_ * 100 if v_ else 0)}%</td><td>{fmt_ars(nm_)}</td>"
+                          f"<td style='text-align:left;white-space:normal'>{top.index[0] if len(top) else '—'}</td><td>{fmt_num(len(R_))}</td><td>{fmt_num(ab_)}</td></tr>")
+                for k_, val in zip(["o", "v", "n", "m", "an", "dn", "nm", "r", "ab"], [o_, v_, n_, mm_, an_, dn_, nm_, len(R_), ab_]):
+                    tot[k_] += val
+            filas += (f"<tr class='total'><td>Total</td><td>{fmt_num(tot['o'])}</td><td class='sep'>{fmt_num(tot['n'])}</td>"
+                      f"<td>{fmt_dec(tot['n'] / tot['o'] * 100 if tot['o'] else 0)}%</td><td>{fmt_num(tot['an'])}</td><td>{fmt_num(tot['dn'])}</td>"
+                      f"<td>{fmt_ars(tot['m'])}</td><td>{fmt_dec(tot['m'] / tot['v'] * 100 if tot['v'] else 0)}%</td><td>{fmt_ars(tot['nm'])}</td><td></td>"
+                      f"<td>{fmt_num(tot['r'])}</td><td>{fmt_num(tot['ab'])}</td></tr>")
+            html("<div class='tbl-wrap'><table class='ftable compact'><thead><tr><th>Marca</th><th>Órdenes</th><th class='sep'>Revertidas</th><th>Tasa</th>"
+                 "<th>Antes de entregar</th><th>Después de entregar</th><th>Facturación revertida</th><th>% de la venta</th><th>Evitable (nuestra)</th>"
+                 f"<th style='text-align:left'>Motivo principal</th><th>Reclamos</th><th>Abiertos</th></tr></thead><tbody>{filas}</tbody></table></div>")
 
-            # ---------- CANCELACIONES ----------
-            seccion("Cancelaciones", "Quién cancela y por qué",
-                    "'Vendedor (nosotros)' = canceladas desde nuestra cuenta (falta de stock, error de precio, etc.): son las evitables.")
-            if Cp.empty:
-                st.info("Sin cancelaciones en el período.")
-            else:
-                g1, g2 = st.columns([1, 1.6])
-                with g1:
-                    q = Cp.groupby("quien").agg(n=("orden_meli", "count"), monto=("monto", "sum")).reset_index().sort_values("n", ascending=False)
-                    fig = go.Figure(go.Pie(labels=q["quien"], values=q["n"], hole=0.62, sort=False, textinfo="percent",
-                                           marker=dict(colors=[PV_COLOR_QUIEN.get(x, "#94A3B8") for x in q["quien"]]),
-                                           customdata=q["monto"], hovertemplate="%{label}<br>%{value} órdenes · $%{customdata:,.0f}<extra></extra>"))
-                    fig.update_layout(title="¿Quién canceló?", annotations=[dict(text=fmt_num(len(Cp)), showarrow=False, font=dict(size=22, color="#F8FAFC"))])
-                    st.plotly_chart(estilo(fig, 360), width="stretch")
-                with g2:
-                    mo = (Cp.groupby(["motivo", "quien"]).agg(n=("orden_meli", "count"), monto=("monto", "sum")).reset_index()
-                          .sort_values("n", ascending=False).head(12))
-                    mo["motivo_c"] = mo["motivo"].str.slice(0, 55)
-                    fig = px.bar(mo, y="motivo_c", x="n", color="quien", orientation="h", title="Motivos de cancelación (top 12)",
-                                 color_discrete_map=PV_COLOR_QUIEN, custom_data=["monto"])
-                    fig.update_traces(marker_line_width=0, hovertemplate="%{y}<br>%{x} órdenes · $%{customdata[0]:,.0f}<extra></extra>")
-                    fig.update_layout(xaxis_title="Órdenes", yaxis_title="", yaxis=dict(autorange="reversed"), legend_title_text="", barmode="stack")
-                    fig = estilo(fig, 380)
-                    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=90))
-                    st.plotly_chart(fig, width="stretch")
-                sem = Cp.assign(sem=Cp["fecha"].dt.tz_localize(None).dt.to_period("W").dt.start_time).groupby(["sem", "quien"]).size().rename("n").reset_index()
-                vm_sem = base_m[(base_m["canal"] == "MercadoLibre") & base_m["marca"].astype(str).isin(marcas_pv) & (base_m["dia"] >= pv_ini)]
-                if len(vm_sem):
-                    key_ = "orden_meli" if "orden_meli" in vm_sem.columns else "id_pedido"
-                    vm_sem = vm_sem.drop_duplicates(key_).assign(sem=lambda x: x["fecha"].dt.tz_localize(None).dt.to_period("W").dt.start_time).groupby("sem").size()
+            # ---------- TENDENCIA ----------
+            if len(Lp):
                 from plotly.subplots import make_subplots as _msp
+                sem = Lp.assign(sem=Lp["fecha"].dt.tz_localize(None).dt.to_period("W").dt.start_time).groupby(["sem", "origen"])["monto"].sum().reset_index()
+                bb = base_m[(base_m["canal"] == "MercadoLibre") & base_m["marca"].astype(str).isin(marcas_pv) & (base_m["dia"] >= pv_ini)]
+                key_ = "orden_meli" if "orden_meli" in bb.columns else "id_pedido"
+                bb = bb.drop_duplicates(key_)
+                mcol = "total_orden_meli" if "total_orden_meli" in bb.columns else "total_pedido"
+                vsem = bb.assign(sem=bb["fecha"].dt.tz_localize(None).dt.to_period("W").dt.start_time).groupby("sem")[mcol].sum()
                 fig = _msp(specs=[[{"secondary_y": True}]])
-                for qn in sem["quien"].unique():
-                    s_ = sem[sem["quien"] == qn]
-                    fig.add_bar(x=s_["sem"], y=s_["n"], name=qn, marker_color=PV_COLOR_QUIEN.get(qn, "#94A3B8"))
-                tasa = (sem[sem["quien"] != "Pago no aprobado"].groupby("sem")["n"].sum() / vm_sem * 100).dropna() if len(vm_sem) else pd.Series(dtype=float)
-                fig.add_scatter(x=tasa.index, y=tasa.values, name="Tasa de cancelación %", line=dict(color="#F8FAFC", width=2, dash="dot"), secondary_y=True)
-                fig.update_layout(title="Cancelaciones por semana y tasa sobre las órdenes", barmode="stack", bargap=0.25, hovermode="x unified", legend_title_text="")
-                fig.update_yaxes(title_text="Órdenes", secondary_y=False)
-                fig.update_yaxes(title_text="Tasa", ticksuffix="%", secondary_y=True, showgrid=False, rangemode="tozero")
+                for og_ in ["Nosotros", "Comprador", "Logística", "MercadoLibre"]:
+                    s_ = sem[sem["origen"] == og_]
+                    if len(s_):
+                        fig.add_bar(x=s_["sem"], y=s_["monto"], name=og_, marker_color=PV_COLOR_ORIGEN.get(og_))
+                tasa = (sem.groupby("sem")["monto"].sum() / vsem * 100).dropna()
+                fig.add_scatter(x=tasa.index, y=tasa.values, name="% de la venta revertida", line=dict(color="#F8FAFC", width=2, dash="dot"), secondary_y=True)
+                fig.update_layout(title="Facturación revertida por semana (según de quién depende)", barmode="stack", bargap=0.25, hovermode="x unified", legend_title_text="")
+                fig.update_yaxes(title_text="", secondary_y=False)
+                fig.update_yaxes(ticksuffix="%", secondary_y=True, showgrid=False, rangemode="tozero")
                 fig = estilo(fig, 380)
                 fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=90))
                 st.plotly_chart(fig, width="stretch")
-                # productos más cancelados por nosotros
-                nos = Cp[Cp["quien"] == "Vendedor (nosotros)"]
-                if len(nos):
-                    tp = nos.assign(producto=nos["titulos"].fillna("").astype(str).str.split(" | ").str[0]).groupby(["marca", "producto", "skus"]).agg(
-                        n=("orden_meli", "count"), monto=("monto", "sum"), motivo=("motivo", lambda s_: s_.value_counts().index[0])).reset_index().sort_values("monto", ascending=False)
-                    filas = "".join(f"<tr><td style='text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis'>{r_['producto'][:60]}</td><td>{r_['marca']}</td>"
-                                    f"<td>{str(r_['skus'])[:40]}</td><td>{fmt_num(r_['n'])}</td><td>{fmt_ars(r_['monto'])}</td><td style='text-align:left'>{str(r_['motivo'])[:50]}</td></tr>"
-                                    for _, r_ in tp.head(15).iterrows())
-                    st.markdown("**Productos que más cancelamos nosotros** (evitables)")
-                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Producto</th><th>Marca</th><th>SKU</th><th>Órdenes</th>"
-                         f"<th>Monto</th><th style='text-align:left'>Motivo principal</th></tr></thead><tbody>{filas}</tbody></table></div>")
-                exp = Cp[["marca", "orden_meli", "fecha", "monto", "unidades", "quien", "motivo", "pago_estado", "titulos", "skus"]].copy()
+                st.caption("La última semana todavía está en curso y los reclamos aparecen días después de la compra: sus números van a subir.")
+
+            # ---------- PRODUCTOS ----------
+            seccion("Productos", "Productos con más ventas revertidas",
+                    "Tasa = ventas revertidas / órdenes del SKU en MeLi en el período. Sirve para detectar problemas de talle, calidad o publicación.")
+            if len(Lp):
+                b_sku = base_m[(base_m["canal"] == "MercadoLibre") & (base_m["dia"] >= pv_ini)]
+                ped_sku = b_sku.groupby("sku")["orden_meli" if "orden_meli" in b_sku.columns else "id_pedido"].nunique()
+                pr = Lp.groupby(["marca", "producto", "sku1"]).agg(n=("orden_meli", "count"), monto=("monto", "sum"),
+                                                                  antes=("cuando", lambda s_: (s_ == "Antes de entregar").sum()),
+                                                                  motivo=("motivo_es", lambda s_: s_.value_counts().index[0]),
+                                                                  cat=("categoria", lambda s_: s_.value_counts().index[0])).reset_index()
+                pr["ordenes"] = pr["sku1"].map(ped_sku).fillna(0)
+                pr["tasa"] = np.where(pr["ordenes"] > 0, pr["n"] / pr["ordenes"] * 100, np.nan)
+                ver_pr = st.segmented_control("Ver", ["Más facturación revertida", "Mayor tasa (mín. 5 órdenes)", "Responsabilidad nuestra"],
+                                              default="Más facturación revertida", key="pv_prod_ver") or "Más facturación revertida"
+                if ver_pr.startswith("Mayor"):
+                    pr = pr[pr["ordenes"] >= 5].sort_values(["tasa", "n"], ascending=False)
+                elif ver_pr.startswith("Resp"):
+                    pr = pr[pr["cat"].map(PV_CAT_ORIGEN) == "Nosotros"].sort_values("monto", ascending=False)
+                else:
+                    pr = pr.sort_values("monto", ascending=False)
+                filas = "".join(f"<tr><td style='text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis'>{str(r_['producto'])[:62]}</td>"
+                                f"<td>{r_['marca']}</td><td>{r_['sku1']}</td><td>{fmt_num(r_['n'])}</td><td>{fmt_num(r_['ordenes'])}</td>"
+                                f"<td>{fmt_dec(r_['tasa'], 1) + '%' if pd.notna(r_['tasa']) else '—'}</td><td>{fmt_ars(r_['monto'])}</td>"
+                                f"<td>{fmt_num(r_['antes'])} / {fmt_num(r_['n'] - r_['antes'])}</td>"
+                                f"<td style='text-align:left;white-space:normal'>{r_['motivo']}</td></tr>" for _, r_ in pr.head(20).iterrows())
+                if filas:
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Producto</th><th>Marca</th><th>SKU</th>"
+                         "<th>Revertidas</th><th>Órdenes</th><th>Tasa</th><th>Facturación</th><th>Antes / después</th>"
+                         f"<th style='text-align:left'>Motivo principal</th></tr></thead><tbody>{filas}</tbody></table></div>")
+                else:
+                    st.info("Sin productos para este filtro.")
+                exp = Cp[["marca", "orden_meli", "fecha", "monto", "unidades", "cuando", "origen", "categoria", "motivo_es", "perdida", "producto", "sku1"]].copy()
                 exp["fecha"] = exp["fecha"].dt.strftime("%d/%m/%Y %H:%M")
-                st.download_button("Descargar cancelaciones (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"), file_name="meli_cancelaciones.csv",
+                exp.columns = ["Marca", "Orden", "Fecha compra", "Monto", "Unidades", "Cuándo", "Depende de", "Motivo", "Detalle", "Es venta perdida", "Producto", "SKU"]
+                st.download_button("Descargar ventas revertidas (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"), file_name="meli_ventas_revertidas.csv",
                                    mime="text/csv", icon=":material/download:", key="dl_pv_canc")
 
-            # ---------- RECLAMOS Y DEVOLUCIONES ----------
-            seccion("Reclamos y devoluciones", "Motivos, resolución y estado de las devoluciones",
-                    "Reclamo = el comprador abrió un caso. Devolución = hubo envío del producto de vuelta. Montos = total de la orden reclamada.")
+            # ---------- RECLAMOS: gestión ----------
+            seccion("Reclamos", "Cómo se resuelven los reclamos y dónde están las devoluciones",
+                    "Devolución = el comprador devuelve el producto. Cancelación antes del envío = la pidió el comprador. Reclamo = problema con la compra.")
             if Rp.empty:
                 st.info("Sin reclamos en el período.")
             else:
-                g1, g2 = st.columns([1.6, 1])
+                g1, g2, g3 = st.columns(3)
                 with g1:
-                    mo = Rp.groupby(["motivo", "tipo_txt"]).agg(n=("claim_id", "count"), monto=("monto", "sum")).reset_index().sort_values("n", ascending=False).head(12)
-                    mo["motivo_c"] = mo["motivo"].str.slice(0, 55)
-                    fig = px.bar(mo, y="motivo_c", x="n", color="tipo_txt", orientation="h", title="Motivos de reclamo (top 12)", custom_data=["monto"])
-                    fig.update_traces(marker_line_width=0, hovertemplate="%{y}<br>%{x} reclamos · $%{customdata[0]:,.0f}<extra></extra>")
-                    fig.update_layout(xaxis_title="Reclamos", yaxis_title="", yaxis=dict(autorange="reversed"), legend_title_text="", barmode="stack")
-                    fig = estilo(fig, 400)
-                    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=90))
-                    st.plotly_chart(fig, width="stretch")
+                    tt = Rp["tipo_es"].value_counts().reset_index()
+                    tt.columns = ["tipo", "n"]
+                    fig = go.Figure(go.Pie(labels=tt["tipo"], values=tt["n"], hole=0.6, textinfo="percent+label",
+                                           marker=dict(colors=["#A78BFA", "#38BDF8", "#FBBF24", "#64748B"])))
+                    fig.update_layout(title="Tipo de reclamo", showlegend=False)
+                    st.plotly_chart(estilo(fig, 340), width="stretch")
                 with g2:
                     af = Rp["a_favor"].value_counts()
-                    fig = go.Figure(go.Pie(labels=af.index, values=af.values, hole=0.62, sort=False, textinfo="percent+label",
-                                           marker=dict(colors=[{"Comprador": "#F87171", "Nosotros": "#34D399", "Abierto": "#FBBF24"}.get(x, "#94A3B8") for x in af.index])))
-                    fig.update_layout(title="Resolución", showlegend=False,
-                                      annotations=[dict(text=fmt_num(len(Rp)), showarrow=False, font=dict(size=22, color="#F8FAFC"))])
-                    st.plotly_chart(estilo(fig, 380), width="stretch")
-                Dv = Rp[Rp["es_dev"]]
-                if len(Dv):
-                    g1, g2 = st.columns(2)
-                    with g1:
-                        de = Dv["dev_txt"].replace("", "Sin dato").value_counts().reset_index()
-                        de.columns = ["estado", "n"]
-                        fig = px.bar(de, x="n", y="estado", orientation="h", title="¿Dónde están las devoluciones?", text="n",
-                                     color_discrete_sequence=["#A78BFA"])
-                        fig.update_traces(marker_line_width=0)
-                        fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(autorange="reversed"))
-                        st.plotly_chart(estilo(fig, 320), width="stretch")
-                    with g2:
-                        co_ = Dv["dev_condicion"].map(PV_COND).fillna("").replace("", "Sin revisión de MeLi").value_counts().reset_index()
-                        co_.columns = ["condicion", "n"]
-                        fig = go.Figure(go.Pie(labels=co_["condicion"], values=co_["n"], hole=0.6, textinfo="percent+label",
-                                               marker=dict(colors=[{"Vendible": "#34D399", "No vendible": "#F87171", "Descarte": "#EF4444"}.get(x, "#64748B") for x in co_["condicion"]])))
-                        fig.update_layout(title="Condición del producto devuelto", showlegend=False)
-                        st.plotly_chart(estilo(fig, 320), width="stretch")
-                # productos con más reclamos + tasa sobre unidades vendidas
-                vend_sku = base_net[(base_net["canal"] == "MercadoLibre") & (base_net["dia"] >= pv_ini)].groupby("sku")["cantidad"].sum()
-                pr = Rp.assign(producto=Rp["titulos"].str.split(" | ").str[0], sku1=Rp["skus"].str.split(" | ").str[0])
-                pr = pr.groupby(["marca", "producto", "sku1"]).agg(n=("claim_id", "count"), dev=("es_dev", "sum"), monto=("monto", "sum"),
-                                                                  motivo=("motivo", lambda s_: s_.value_counts().index[0])).reset_index()
-                pr["vendidas"] = pr["sku1"].map(vend_sku).fillna(0)
-                pr["tasa"] = np.where(pr["vendidas"] > 0, pr["n"] / pr["vendidas"] * 100, np.nan)
-                pr = pr.sort_values(["n", "monto"], ascending=False)
-                filas = "".join(f"<tr><td style='text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis'>{str(r_['producto'])[:58]}</td><td>{r_['marca']}</td>"
-                                f"<td>{r_['sku1']}</td><td>{fmt_num(r_['n'])}</td><td>{fmt_num(r_['dev'])}</td><td>{fmt_num(r_['vendidas'])}</td>"
-                                f"<td>{fmt_dec(r_['tasa'], 1) + '%' if pd.notna(r_['tasa']) else '—'}</td><td>{fmt_ars(r_['monto'])}</td>"
-                                f"<td style='text-align:left'>{str(r_['motivo'])[:45]}</td></tr>" for _, r_ in pr.head(15).iterrows())
-                st.markdown("**Productos con más reclamos** · tasa = reclamos / unidades vendidas en MeLi del SKU en el período")
-                html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Producto</th><th>Marca</th><th>SKU</th><th>Reclamos</th>"
-                     f"<th>Devoluciones</th><th>Vendidas</th><th>Tasa</th><th>Monto</th><th style='text-align:left'>Motivo principal</th></tr></thead><tbody>{filas}</tbody></table></div>")
-                # abiertos: lo que hay que gestionar
+                    fig = go.Figure(go.Pie(labels=af.index, values=af.values, hole=0.6, textinfo="percent+label",
+                                           marker=dict(colors=[{"Comprador": "#F87171", "Nosotros": "#34D399", "Abierto": "#FBBF24",
+                                                                "Parcial (ambos)": "#38BDF8"}.get(x, "#94A3B8") for x in af.index])))
+                    fig.update_layout(title="¿A favor de quién se resolvió?", showlegend=False)
+                    st.plotly_chart(estilo(fig, 340), width="stretch")
+                with g3:
+                    dv = Rp[Rp["dev_estado"] != ""]["dev_es"].value_counts().reset_index()
+                    dv.columns = ["estado", "n"]
+                    fig = px.bar(dv, x="n", y="estado", orientation="h", text="n", title="¿Dónde están las devoluciones?", color_discrete_sequence=["#A78BFA"])
+                    fig.update_traces(marker_line_width=0)
+                    fig.update_layout(xaxis_title="", yaxis_title="", yaxis=dict(autorange="reversed"))
+                    st.plotly_chart(estilo(fig, 340), width="stretch")
+                rs = Rp[Rp["estado"] == "closed"].groupby("resolucion_es").size().sort_values(ascending=False)
+                filas = "".join(f"<tr><td style='text-align:left'>{k_}</td><td>{fmt_num(v_)}</td><td>{fmt_dec(v_ / rs.sum() * 100 if rs.sum() else 0)}%</td></tr>"
+                                for k_, v_ in rs.items())
+                g1, g2 = st.columns([1, 1.4])
+                with g1:
+                    st.markdown("**Cómo se cerraron**")
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Resolución</th><th>Reclamos</th><th>%</th></tr></thead>"
+                         f"<tbody>{filas}</tbody></table></div>")
+                with g2:
+                    mr = Rp.groupby(["categoria", "motivo_es"]).size().rename("n").reset_index().sort_values("n", ascending=False).head(12)
+                    filas = "".join(f"<tr><td style='text-align:left;white-space:normal'>{r_['motivo_es']}</td><td style='text-align:left'>{r_['categoria']}</td>"
+                                    f"<td>{fmt_num(r_['n'])}</td><td>{fmt_dec(r_['n'] / len(Rp) * 100)}%</td></tr>" for _, r_ in mr.iterrows())
+                    st.markdown("**Motivos que eligen los compradores al reclamar**")
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th style='text-align:left'>Motivo</th><th style='text-align:left'>Categoría</th>"
+                         f"<th>Reclamos</th><th>%</th></tr></thead><tbody>{filas}</tbody></table></div>")
                 ab = Rp[Rp["estado"] != "closed"].sort_values("fecha")
                 if len(ab):
+                    prod_ord = dict(zip(C["orden_meli"], C["producto"]))
                     st.markdown(f"**Reclamos abiertos para gestionar ({fmt_num(len(ab))})** · los más viejos primero")
-                    filas = "".join(f"<tr><td class='strong'>{r_['claim_id']}</td><td>{r_['marca']}</td><td>{r_['fecha']:%d/%m %H:%M}</td>"
-                                    f"<td>{(hoy - r_['dia']).days} días</td><td>{r_['tipo_txt']}</td><td>{r_['etapa_txt']}</td>"
-                                    f"<td style='text-align:left'>{str(r_['motivo'])[:45]}</td><td>{r_['dev_txt'] or '—'}</td><td>{fmt_ars(r_['monto'])}</td>"
-                                    f"<td style='text-align:left;max-width:260px;overflow:hidden;text-overflow:ellipsis'>{str(r_['titulos'])[:50]}</td></tr>"
-                                    for _, r_ in ab.head(30).iterrows())
-                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Reclamo</th><th>Marca</th><th>Abierto</th><th>Hace</th><th>Tipo</th><th>Etapa</th>"
-                         f"<th style='text-align:left'>Motivo</th><th>Devolución</th><th>Monto</th><th style='text-align:left'>Producto</th></tr></thead><tbody>{filas}</tbody></table></div>")
-                cols_x = [c_ for c_ in ["marca", "claim_id", "orden_meli", "fecha", "tipo_txt", "etapa_txt", "estado", "motivo", "motivo_detalle", "a_favor", "cubierto",
-                                        "dev_txt", "dev_dinero", "dev_condicion", "monto", "perdido", "unidades", "titulos", "skus"] if c_ in Rp.columns]
-                exp = Rp[cols_x].copy()
+                    filas = ""
+                    for _, r_ in ab.head(40).iterrows():
+                        dias_ = (hoy - r_["dia"]).days
+                        cls = "ok" if dias_ <= 2 else ("warn" if dias_ <= 6 else "bad")
+                        prod = str(r_["titulos"] or prod_ord.get(r_["orden_meli"], "") or "—").split(" | ")[0]
+                        filas += (f"<tr><td class='strong'>{r_['claim_id']}</td><td>{r_['marca']}</td><td>{r_['fecha']:%d/%m}</td>"
+                                  f"<td><span class='pill {cls}'>{dias_} días</span></td><td>{r_['tipo_es']}</td><td>{r_['etapa_es']}</td>"
+                                  f"<td style='text-align:left;white-space:normal'>{r_['motivo_es']}</td><td>{r_['dev_es'] or '—'}</td>"
+                                  f"<td>{fmt_ars(r_['monto']) if pd.notna(r_['monto']) else '—'}</td>"
+                                  f"<td style='text-align:left;max-width:260px;overflow:hidden;text-overflow:ellipsis'>{prod[:50]}</td></tr>")
+                    html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Reclamo</th><th>Marca</th><th>Abierto</th><th>Hace</th><th>Tipo</th>"
+                         "<th>Instancia</th><th style='text-align:left'>Motivo</th><th>Devolución</th><th>Monto</th><th style='text-align:left'>Producto</th></tr></thead>"
+                         f"<tbody>{filas}</tbody></table></div>")
+                exp = Rp[["marca", "claim_id", "orden_meli", "fecha", "tipo_es", "etapa_es", "estado", "categoria", "motivo_es", "a_favor", "resolucion_es",
+                          "cubierto", "dev_es", "monto", "titulos", "skus"]].copy()
                 exp["fecha"] = exp["fecha"].dt.strftime("%d/%m/%Y %H:%M")
-                st.download_button("Descargar reclamos y devoluciones (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"), file_name="meli_reclamos.csv",
+                exp["estado"] = exp["estado"].map({"closed": "Cerrado", "opened": "Abierto"}).fillna(exp["estado"])
+                exp.columns = ["Marca", "Reclamo", "Orden", "Fecha", "Tipo", "Instancia", "Estado", "Categoría", "Motivo", "A favor de", "Resolución",
+                               "Protección MeLi", "Devolución", "Monto", "Producto", "SKU"]
+                st.download_button("Descargar reclamos (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"), file_name="meli_reclamos.csv",
                                    mime="text/csv", icon=":material/download:", key="dl_pv_recl")
 
 
