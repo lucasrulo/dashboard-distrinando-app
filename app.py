@@ -1579,6 +1579,84 @@ with tab_com:
             if sin_cuotas:
                 st.caption(f"ℹ️ {', '.join(sin_cuotas)}: el pedido no trae la cantidad de cuotas, por eso no aparece en estos gráficos.")
 
+        # ---------- TICKET ALTO Y FINANCIACIÓN ----------
+        seccion("Ticket alto", "¿Cómo se pagan los tickets altos?",
+                "Pedidos por rango de ticket: cuántos hay, con qué medio de pago y en cuántas cuotas. "
+                "Las cuotas solo las informa MercadoLibre (Shopify no trae la cantidad de cuotas en el pedido).")
+        TRAMOS_TK = [(0, 50000, "Menos de 50 mil"), (50000, 100000, "50 a 100 mil"), (100000, 150000, "100 a 150 mil"),
+                     (150000, 250000, "150 a 250 mil"), (250000, 300000, "250 a 300 mil"), (300000, 10**12, "300 mil o más")]
+        NOM_TK = [t[2] for t in TRAMOS_TK]
+        T_ = Pc.copy()
+        T_["canal"] = T_["canal"].astype(str)
+        T_["medio_grupo"] = T_["medio_grupo"].astype(str)
+        T_["tramo"] = pd.cut(T_["total_pedido"], bins=[t[0] for t in TRAMOS_TK] + [10**12], labels=NOM_TK, right=False)
+        T_["n_cuotas"] = T_["cuotas_grupo"].astype(str).str.extract(r"(\d+)\s*cuota")[0].astype(float)
+        T_.loc[T_["cuotas_grupo"].astype(str) == "1 pago", "n_cuotas"] = 1
+        es_cred = T_["medio_grupo"].isin(["MeLi · Tarjeta de crédito", "MeLi · Mercado Crédito"])
+        T_["cred"] = es_cred
+        hay_cuotas = (T_["canal"] == "MercadoLibre").any()
+
+        filas = ""
+        for nom in NOM_TK:
+            d_ = T_[T_["tramo"] == nom]
+            if d_.empty:
+                continue
+            ml_ = d_[(d_["canal"] == "MercadoLibre")]
+            cr_ = ml_[ml_["cred"] & ml_["n_cuotas"].notna()]
+            prom = cr_["n_cuotas"].mean() if len(cr_) else np.nan
+            prom_p = np.average(cr_["n_cuotas"], weights=cr_["total_pedido"]) if len(cr_) and cr_["total_pedido"].sum() else np.nan
+            pc_cred = len(ml_[ml_["cred"]]) / len(ml_) * 100 if len(ml_) else np.nan
+            dist = {k_: (cr_["n_cuotas"].between(*rg).sum() / len(cr_) * 100 if len(cr_) else np.nan)
+                    for k_, rg in [("1", (1, 1)), ("2-3", (2, 3)), ("4-6", (4, 6)), ("9+", (7, 99))]}
+            fp = lambda v: (fmt_dec(v, 0) + "%") if pd.notna(v) else "—"
+            filas += (f"<tr><td class='strong' style='text-align:left'>{nom}</td><td>{fmt_num(len(d_))}</td>"
+                      f"<td>{fmt_dec(len(d_) / len(T_) * 100)}%</td><td>{fmt_ars(d_['total_pedido'].sum())}</td><td>{fmt_ars(d_['total_pedido'].mean())}</td>"
+                      f"<td class='sep'>{fmt_num(len(ml_))}</td><td>{fp(pc_cred)}</td>"
+                      f"<td class='strong' style='color:#FFE600'>{fmt_dec(prom, 1) if pd.notna(prom) else '—'}</td><td>{fmt_dec(prom_p, 1) if pd.notna(prom_p) else '—'}</td>"
+                      f"<td>{fp(dist['1'])}</td><td>{fp(dist['2-3'])}</td><td>{fp(dist['4-6'])}</td><td>{fp(dist['9+'])}</td></tr>")
+        html("<div class='tbl-wrap'><table class='ftable compact'><thead>"
+             "<tr class='grp-h'><th></th><th colspan='4' style='text-align:center;color:#22D3EE'>Todos los pedidos del canal elegido</th>"
+             "<th colspan='8' class='sep' style='text-align:center;color:#FFE600'>MercadoLibre · financiación</th></tr>"
+             "<tr><th style='text-align:left'>Ticket</th><th>Pedidos</th><th>% pedidos</th><th>Facturación</th><th>Ticket prom.</th>"
+             "<th class='sep'>Pedidos MeLi</th><th>% con crédito</th><th>Cuotas prom.</th><th>Cuotas prom. ($)</th>"
+             f"<th>1 pago</th><th>2-3 cuotas</th><th>4-6 cuotas</th><th>9 o más</th></tr></thead><tbody>{filas}</tbody></table></div>")
+        st.caption("Cuotas prom. = promedio de cuotas de los pagos con tarjeta de crédito o Mercado Crédito. "
+                   "Cuotas prom. ($) = ponderado por el monto del pedido. Las columnas de cuotas son % sobre esos pagos.")
+
+        # Ventas mensuales por medio de pago para los rangos elegidos
+        tk1, tk2 = st.columns([1.8, 1])
+        with tk1:
+            tramos_sel = st.pills("Rangos de ticket", NOM_TK, selection_mode="multi", default=["150 a 250 mil", "300 mil o más"],
+                                  key="tk_tramos") or ["300 mil o más"]
+        with tk2:
+            vista_tk = st.segmented_control("Ver", ["Pedidos", "Facturación"], default="Pedidos", key="tk_vista") or "Pedidos"
+        for nom in [n_ for n_ in NOM_TK if n_ in tramos_sel]:
+            d_ = T_[T_["tramo"] == nom].copy()
+            if d_.empty:
+                st.caption(f"{nom}: sin pedidos en el período.")
+                continue
+            d_["mes"] = d_["fecha"].dt.tz_localize(None).dt.to_period("M").astype(str)
+            val = "total_pedido"
+            pv_ = (d_.pivot_table(index="mes", columns="medio_grupo", values=val, aggfunc="count" if vista_tk == "Pedidos" else "sum", fill_value=0)
+                   .sort_index())
+            pv_ = pv_[pv_.sum().sort_values(ascending=False).index]
+            pv_["Total"] = pv_.sum(axis=1)
+            fmt_v = fmt_num if vista_tk == "Pedidos" else fmt_compact
+            cab = "".join(f"<th>{c_}</th>" for c_ in pv_.columns)
+            filas = ""
+            for mes_, r_ in pv_.iterrows():
+                filas += f"<tr><td class='strong' style='text-align:left'>{pd.Period(mes_).strftime('%m/%Y')}</td>" + "".join(
+                    ("<td class='strong'>" if c_ == "Total" else "<td>") + (fmt_v(v_) if v_ else "·") + "</td>" for c_, v_ in r_.items()) + "</tr>"
+            tot_ = pv_.sum()
+            filas += "<tr class='total'><td>Total</td>" + "".join(f"<td>{fmt_v(v_)}</td>" for v_ in tot_.values) + "</tr>"
+            prom_cu = d_.loc[d_["cred"] & d_["n_cuotas"].notna(), "n_cuotas"].mean()
+            st.markdown((f"**Ticket {nom}** · {fmt_num(len(d_))} pedidos · ticket promedio {fmt_ars(d_['total_pedido'].mean())}"
+                         + (f" · en MeLi se pagan en **{fmt_dec(prom_cu, 1)} cuotas** en promedio" if pd.notna(prom_cu) else "")).replace("$", "\\$"))
+            html(f"<div class='tbl-wrap'><table class='ftable compact'><thead><tr><th style='text-align:left'>Mes</th>{cab}</tr></thead>"
+                 f"<tbody>{filas}</tbody></table></div>")
+        st.caption("Meses según el período del filtro de la izquierda: elegí 'Todo' para ver todos los meses (MercadoLibre tiene datos desde el 1/09). "
+                   "En Tienda Online el medio de pago dice la pasarela (Mercado Pago, Mobbex, transferencia), no si fue tarjeta o dinero en cuenta.")
+
 # ==============================================================================
 # TAB · PUBLICIDAD MELI (Product Ads)
 # ==============================================================================
