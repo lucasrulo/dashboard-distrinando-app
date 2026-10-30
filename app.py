@@ -2790,6 +2790,151 @@ if tab_pv is not None:
                 st.download_button("Descargar ventas revertidas (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"), file_name="meli_ventas_revertidas.csv",
                                    mime="text/csv", icon=":material/download:", key="dl_pv_canc")
 
+            # ---------- MAPA DE PROBLEMAS POR ARTÍCULO ----------
+            seccion("Artículos", "¿Qué artículos tienen problemas y cuáles?",
+                    "Cada artículo (modelo + color) con todos sus casos: ventas revertidas y reclamos, separados por tipo de problema. "
+                    "Tocá un artículo para ver cada caso con su talle y motivo.")
+            PV_CATS_PROD = ["Talle, color o medida", "Distinto a lo publicado", "Dañado, roto o incompleto", "Sin stock / no disponible",
+                            "Etiqueta no impresa a tiempo", "No lo recibió / problema de entrega", "Envío no entregado / fallido", "Atención del vendedor"]
+            PV_CATS_ARR = ["Arrepentimiento (ya lo recibió)", "Arrepentimiento antes de recibir"]
+            PV_CAT_CORTO = {"Talle, color o medida": "Talle / color", "Distinto a lo publicado": "Distinto a lo publicado",
+                            "Dañado, roto o incompleto": "Dañado / incompleto", "Sin stock / no disponible": "Sin stock",
+                            "Etiqueta no impresa a tiempo": "Etiqueta", "No lo recibió / problema de entrega": "No lo recibió",
+                            "Envío no entregado / fallido": "Envío fallido", "Atención del vendedor": "Atención",
+                            "Arrepentimiento (ya lo recibió)": "Arrepentido (recibido)", "Arrepentimiento antes de recibir": "Arrepentido (antes)",
+                            "Cancelada por MeLi sin causa informada": "MeLi sin causa", "Compra no reconocida / fraude": "Fraude", "Otros": "Otros"}
+            PV_DIAG = {"Talle, color o medida": "Revisar guía de talles y horma",
+                       "Distinto a lo publicado": "Revisar fotos, título y ficha de la publicación",
+                       "Dañado, roto o incompleto": "Revisar calidad y embalaje del lote",
+                       "Sin stock / no disponible": "Sincronizar stock con MeLi",
+                       "Etiqueta no impresa a tiempo": "Despachar a tiempo (etiqueta vencida)",
+                       "No lo recibió / problema de entrega": "Revisar envío y comprobantes de entrega",
+                       "Envío no entregado / fallido": "Revisar envío y dirección",
+                       "Atención del vendedor": "Responder más rápido las consultas/reclamos",
+                       "Arrepentimiento (ya lo recibió)": "Alta devolución: revisar expectativa (fotos, descripción, precio)",
+                       "Arrepentimiento antes de recibir": "Cancelan antes de recibir: revisar tiempos de despacho y entrega"}
+            casos = []
+            if len(Lp):
+                a_ = Lp[["marca", "orden_meli", "fecha", "monto", "categoria", "motivo_es", "cuando", "producto", "sku1"]].copy()
+                a_["fuente"] = np.where(a_["cuando"] == "Antes de entregar", "Cancelación", "Devolución con reembolso")
+                a_["estado_caso"] = "Venta revertida"
+                casos.append(a_)
+            if len(Rp):
+                ords_rev = set(Lp["orden_meli"].dropna()) if len(Lp) else set()
+                b_ = Rp[~Rp["orden_meli"].isin(ords_rev)].copy()
+                if len(b_):
+                    prod_ord = dict(zip(C["orden_meli"], C["producto"]))
+                    b_["producto"] = [str(t).split(" | ")[0] if str(t) not in ("", "nan") else prod_ord.get(o, "")
+                                      for t, o in zip(b_["titulos"], b_["orden_meli"])]
+                    b_["sku1"] = [str(s_).split(" | ")[0] if str(s_) not in ("", "nan") else "" for s_ in b_["skus"]]
+                    b_["fuente"] = b_["tipo_es"].replace({"Devolución": "Devolución (reclamo)"})
+                    b_["estado_caso"] = np.where(b_["estado"] == "closed", "Reclamo cerrado · a favor de " + b_["a_favor"].str.lower(), "Reclamo abierto")
+                    b_["cuando"] = ""
+                    casos.append(b_[["marca", "orden_meli", "fecha", "monto", "categoria", "motivo_es", "cuando", "producto", "sku1", "fuente", "estado_caso"]])
+            CA = pd.concat(casos, ignore_index=True) if casos else pd.DataFrame()
+            if CA.empty:
+                st.info("Sin casos en el período.")
+            else:
+                CA["sku1"] = CA["sku1"].fillna("").astype(str).str.strip()
+                CA["producto"] = CA["producto"].fillna("").astype(str).str.strip()
+                sin_art = int(((CA["sku1"] == "") & (CA["producto"] == "")).sum())
+                CA = CA[(CA["sku1"] != "") | (CA["producto"] != "")].copy()
+                CA["modelo"] = [s_.rsplit("-", 1)[0] if "-" in s_ else (s_ or p_[:40]) for s_, p_ in zip(CA["sku1"], CA["producto"])]
+                CA["talle"] = [s_.rsplit("-", 1)[1] if "-" in s_ else "—" for s_ in CA["sku1"]]
+                CA["monto"] = pd.to_numeric(CA["monto"], errors="coerce").fillna(0)
+                m1, m2, m3 = st.columns([1.3, 1.6, 0.9])
+                with m1:
+                    ver_m = st.segmented_control("Mostrar", ["Problemas de producto y servicio", "Todos los motivos"],
+                                                 default="Problemas de producto y servicio", key="pv_mapa_ver",
+                                                 help="'Problemas de producto y servicio' deja afuera el arrepentimiento del comprador y las cancelaciones de MeLi sin causa.") or "Problemas de producto y servicio"
+                with m2:
+                    cats_disp = [c_ for c_ in PV_CATS_PROD + PV_CATS_ARR + ["Compra no reconocida / fraude", "Cancelada por MeLi sin causa informada", "Otros"]
+                                 if (CA["categoria"] == c_).any() and (ver_m == "Todos los motivos" or c_ in PV_CATS_PROD)]
+                    cats_sel = st.pills("Tipo de problema", cats_disp, selection_mode="multi", default=cats_disp, key=f"pv_mapa_cats_{ver_m[:5]}",
+                                        format_func=lambda x: PV_CAT_CORTO.get(x, x)) or cats_disp
+                with m3:
+                    min_c = st.number_input("Mínimo de casos", min_value=1, max_value=50, value=2, step=1, key="pv_mapa_min")
+                busca_m = st.text_input("Buscar artículo", placeholder="Buscar por nombre o SKU…", key="pv_mapa_buscar")
+                CF = CA[CA["categoria"].isin(cats_sel)]
+                if busca_m:
+                    q_ = busca_m.strip().lower()
+                    CF = CF[CF["producto"].str.lower().str.contains(q_, regex=False) | CF["sku1"].str.lower().str.contains(q_, regex=False)]
+                b_mod = base_m[(base_m["canal"] == "MercadoLibre") & (base_m["dia"] >= pv_ini)].copy()
+                if len(b_mod):
+                    b_mod["mod"] = b_mod["sku"].astype(str).map(lambda s_: s_.rsplit("-", 1)[0] if "-" in s_ else s_)
+                    ord_mod = b_mod.groupby("mod")["orden_meli" if "orden_meli" in b_mod.columns else "id_pedido"].nunique()
+                else:
+                    ord_mod = pd.Series(dtype=float)
+                cats_cols = [c_ for c_ in PV_CATS_PROD + PV_CATS_ARR + ["Compra no reconocida / fraude", "Cancelada por MeLi sin causa informada", "Otros"] if c_ in cats_sel and (CF["categoria"] == c_).any()]
+                res_m = []
+                for (mk, md), d in CF.groupby(["marca", "modelo"]):
+                    if len(d) < min_c:
+                        continue
+                    cnt_c = d["categoria"].value_counts()
+                    princ = cnt_c.index[0]
+                    det_p = d.loc[d["categoria"] == princ, "motivo_es"].value_counts()
+                    diag = PV_DIAG.get(princ, "Revisar casos")
+                    if princ == "Talle, color o medida":
+                        ch, gr = int(d["motivo_es"].eq("Le quedó chico").sum()), int(d["motivo_es"].eq("Le quedó grande").sum())
+                        if ch > gr and ch >= 2:
+                            diag = "Calza chico: sugerir medio/un talle más en la publicación"
+                        elif gr > ch and gr >= 2:
+                            diag = "Calza grande: sugerir un talle menos en la publicación"
+                    tall = d.loc[d["talle"] != "—", "talle"].value_counts()
+                    ords = float(ord_mod.get(md, 0))
+                    res_m.append({"marca": mk, "modelo": md, "d": d, "n": len(d), "monto": float(d["monto"].sum()), "cnt": cnt_c,
+                                  "princ": princ, "det": det_p.index[0] if len(det_p) else "", "diag": diag,
+                                  "talles": ", ".join(f"{t_} ({v_})" for t_, v_ in tall.head(3).items()),
+                                  "ordenes": ords, "tasa": len(d) / ords * 100 if ords else np.nan,
+                                  "producto": d["producto"].value_counts().index[0] if (d["producto"] != "").any() else md})
+                orden_m = st.segmented_control("Ordenar por", ["Cantidad de casos", "Tasa sobre ventas", "Facturación afectada"],
+                                               default="Cantidad de casos", key="pv_mapa_orden") or "Cantidad de casos"
+                kf = {"Cantidad de casos": lambda x: (-x["n"], -x["monto"]), "Facturación afectada": lambda x: -x["monto"],
+                      "Tasa sobre ventas": lambda x: -(x["tasa"] if pd.notna(x["tasa"]) and x["ordenes"] >= 5 else -1)}[orden_m]
+                res_m.sort(key=kf)
+                if not res_m:
+                    st.info("Ningún artículo cumple el filtro (probá bajar el mínimo de casos).")
+                else:
+                    mx = max(int(r_["cnt"].max()) for r_ in res_m)
+                    cols_m = "minmax(230px,2.3fr) 0.5fr 0.6fr 0.55fr minmax(230px,1.9fr) " + " ".join(["0.72fr"] * len(cats_cols))
+                    cab = ["Artículo", "Casos", "Órdenes", "Tasa", "Problema principal → qué hacer"] + [PV_CAT_CORTO.get(c_, c_) for c_ in cats_cols]
+                    bloques = ""
+                    for r_ in res_m[:60]:
+                        celdas = [f"<span class='grp-tit'><img src='{img_azure(r_['marca'], r_['modelo'])}'><span><b>{str(r_['producto'])[:46]}</b>"
+                                  f"<small>{r_['marca']} · {r_['modelo']}{' · talles: ' + r_['talles'] if r_['talles'] else ''}</small></span></span>",
+                                  f"<b>{fmt_num(r_['n'])}</b>", fmt_num(r_['ordenes']) if r_["ordenes"] else "—",
+                                  (fmt_dec(r_["tasa"], 1) + "%") if pd.notna(r_["tasa"]) else "—",
+                                  f"<span style='white-space:normal;font-size:12px;text-align:left;display:block'><b>{PV_CAT_CORTO.get(r_['princ'], r_['princ'])}</b>: {r_['det']}<br>"
+                                  f"<span style='color:#FBBF24'>→ {r_['diag']}</span></span>"]
+                        for c_ in cats_cols:
+                            v_ = int(r_["cnt"].get(c_, 0))
+                            col_ = PV_COLOR_ORIGEN.get(PV_CAT_ORIGEN.get(c_, ""), "#94A3B8")
+                            alpha = int((0.15 + 0.6 * v_ / mx) * 255) if v_ else 0
+                            celdas.append(f"<span style='display:inline-block;min-width:34px;padding:2px 6px;border-radius:6px;"
+                                          f"background:{col_}{alpha:02x};font-weight:700'>{v_}</span>" if v_ else "<span style='color:#475569'>·</span>")
+                        fil = ""
+                        for _, x in r_["d"].sort_values("fecha", ascending=False).head(40).iterrows():
+                            fil += (f"<tr><td>{x['fecha']:%d/%m/%Y}</td><td><b>{x['talle']}</b></td><td>{x['sku1'] or '—'}</td>"
+                                    f"<td style='text-align:left'>{PV_CAT_CORTO.get(x['categoria'], x['categoria'])}</td>"
+                                    f"<td style='text-align:left;white-space:normal'>{x['motivo_es']}</td><td style='text-align:left'>{x['fuente']}</td>"
+                                    f"<td style='text-align:left'>{x['estado_caso']}</td><td>{fmt_ars(x['monto']) if x['monto'] else '—'}</td>"
+                                    f"<td>{int(x['orden_meli']) if pd.notna(x['orden_meli']) else '—'}</td></tr>")
+                        det = ("<table class='ftable grp-det'><thead><tr><th>Fecha</th><th>Talle</th><th>SKU</th><th style='text-align:left'>Problema</th>"
+                               "<th style='text-align:left'>Detalle</th><th style='text-align:left'>Caso</th><th style='text-align:left'>Estado</th><th>Monto</th><th>Orden</th></tr></thead>"
+                               f"<tbody>{fil}</tbody></table>")
+                        bloques += ("<details class='grp'><summary class='grp-row' style='grid-template-columns:" + cols_m + "'>" +
+                                    "".join(f"<div>{c_}</div>" for c_ in celdas) + "</summary>" + det + "</details>")
+                    cab_html = "<div class='grp-row grp-head' style='grid-template-columns:" + cols_m + "'>" + "".join(f"<div>{c_}</div>" for c_ in cab) + "</div>"
+                    html("<div class='tbl-wrap'><div style='min-width:" + str(900 + 85 * len(cats_cols)) + "px'>" + cab_html + bloques + "</div></div>")
+                    st.caption(f"{fmt_num(min(len(res_m), 60))} de {fmt_num(len(res_m))} artículos con {min_c}+ casos. Tasa = casos / órdenes de MeLi del artículo en el período. "
+                               "Colores: rojo = depende de nosotros, celeste = del comprador, violeta = logística."
+                               + (f" {fmt_num(sin_art)} casos no traen el artículo y no se muestran." if sin_art else ""))
+                    exp = CF[["marca", "modelo", "producto", "talle", "sku1", "fecha", "categoria", "motivo_es", "fuente", "estado_caso", "monto", "orden_meli"]].copy()
+                    exp["fecha"] = exp["fecha"].dt.strftime("%d/%m/%Y")
+                    exp.columns = ["Marca", "Artículo", "Producto", "Talle", "SKU", "Fecha", "Problema", "Detalle", "Caso", "Estado", "Monto", "Orden"]
+                    st.download_button("Descargar casos por artículo (CSV)", a_str(exp).to_csv(index=False).encode("utf-8"),
+                                       file_name="meli_problemas_por_articulo.csv", mime="text/csv", icon=":material/download:", key="dl_pv_mapa")
+
             # ---------- RECLAMOS: gestión ----------
             seccion("Reclamos", "Cómo se resuelven los reclamos y dónde están las devoluciones",
                     "Devolución = el comprador devuelve el producto. Cancelación antes del envío = la pidió el comprador. Reclamo = problema con la compra.")
