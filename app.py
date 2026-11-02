@@ -566,7 +566,9 @@ def normalizar_obj(o):
     out = {c: {m: {"unidades": int((v or {}).get("unidades", 0) or 0), "facturacion": int((v or {}).get("facturacion", 0) or 0)}
                for m, v in (base.get(c) or {}).items()} for c in CANALES}
     if isinstance(o.get("cyber"), dict):   # meta del Cyber Monday (se guarda en el mismo archivo)
-        out["cyber"] = {"facturacion": int(o["cyber"].get("facturacion", 0) or 0)}
+        det = o["cyber"].get("detalle") or {}
+        out["cyber"] = {"facturacion": int(o["cyber"].get("facturacion", 0) or 0),
+                        "detalle": {c: {m: int(v or 0) for m, v in (det.get(c) or {}).items()} for c in CANALES}}
     return out
 
 
@@ -3421,10 +3423,18 @@ if tab_cyber is not None:
         u1h = PE[PE["fecha"] >= ahora - timedelta(hours=1)]
         ritmo = fact / trans_h if trans_h > 0 else 0
         proy = ritmo * dur_h if en_curso and trans_h >= 1 else (fact if ahora > ev_fin else 0)
-        meta_cy = float((objetivos.get("cyber", {}) or {}).get("facturacion", 0)) if isinstance(objetivos, dict) else 0
-        meta_tot = meta_cy
-        if canal_cy != "General":
-            meta_cy = 0   # la meta es total (ambos canales)
+        cy_obj = (objetivos.get("cyber", {}) or {}) if isinstance(objetivos, dict) else {}
+        cy_det = cy_obj.get("detalle") or {}
+        hay_det = any(v for c_ in CANALES for v in (cy_det.get(c_) or {}).values())
+
+        def meta_cm(canales_, marcas_):
+            if hay_det:
+                return float(sum((cy_det.get(c_) or {}).get(m_, 0) for c_ in canales_ for m_ in marcas_))
+            # sin apertura: la meta total solo aplica a todas las marcas y ambos canales
+            return float(cy_obj.get("facturacion", 0)) if (set(canales_) == set(CANALES) and set(marcas_) >= set(MARCAS_BASE)) else 0.0
+        meta_tot = float(cy_obj.get("facturacion", 0) or 0)
+        meta_cy = meta_cm(CANALES if canal_cy == "General" else [canal_cy], marcas_sel)
+        esp_pct = trans_h / dur_h * 100 if dur_h else 0
         k = st.columns(6)
         k[0].markdown(kpi_card("Facturación del evento", fmt_compact(fact),
                                f"<span class='delta up'>{fmt_dec(fact / (dia_normal * max(trans_h / 24, 1 / 24)), 1)}x el ritmo normal</span>" if dia_normal and fact and trans_h > 0 else "",
@@ -3439,11 +3449,22 @@ if tab_cyber is not None:
                                (f"<span class='delta {'up' if proy >= meta_cy else 'down'}'>{fmt_dec(proy / meta_cy * 100, 0)}% de la meta</span>" if meta_cy and proy else ""),
                                f"<div class='split-legend' style='margin-top:10px'><span>ritmo {fmt_compact(ritmo)}/hora</span></div>", "#FFE600"), unsafe_allow_html=True)
         if ES_ADMIN:
-            with st.expander("🎯 Meta de facturación del evento", expanded=False):
-                nv = st.number_input("Meta total (todas las marcas, ambos canales)", min_value=0, value=int(meta_tot), step=10_000_000, key="cy_meta")
-                if st.button("Guardar meta", key="cy_meta_btn"):
+            with st.expander("🎯 Metas de facturación del evento (por marca y canal)", expanded=False):
+                ed_cy = pd.DataFrame({"Marca": MARCAS_BASE,
+                                      "Tienda Online": [int((cy_det.get("Tienda Online") or {}).get(m_, 0)) for m_ in MARCAS_BASE],
+                                      "MercadoLibre": [int((cy_det.get("MercadoLibre") or {}).get(m_, 0)) for m_ in MARCAS_BASE]})
+                ed_cy_out = st.data_editor(ed_cy, hide_index=True, width="stretch", key="cy_meta_ed", column_config={
+                    "Marca": st.column_config.TextColumn(disabled=True),
+                    "Tienda Online": st.column_config.NumberColumn("Tienda Online ($)", min_value=0, step=1_000_000, format="localized"),
+                    "MercadoLibre": st.column_config.NumberColumn("MercadoLibre ($)", min_value=0, step=1_000_000, format="localized")})
+                tot_ed = int(ed_cy_out[["Tienda Online", "MercadoLibre"]].fillna(0).values.sum())
+                st.caption(f"Total de la apertura: **{fmt_ars(tot_ed)}**".replace("$", "\\$") +
+                           (f" · meta total cargada antes: {fmt_ars(meta_tot)}".replace("$", "\\$") if meta_tot and not hay_det else ""))
+                if st.button("Guardar metas", key="cy_meta_btn", type="primary"):
                     o2 = dict(objetivos) if isinstance(objetivos, dict) else {}
-                    o2["cyber"] = {"facturacion": nv}
+                    det_new = {c_: {r_["Marca"]: int(r_[c_] or 0) for _, r_ in ed_cy_out.iterrows()} for c_ in CANALES}
+                    nv = tot_ed if tot_ed else int(meta_tot)
+                    o2["cyber"] = {"facturacion": nv, "detalle": det_new}
                     ok_, msg_ = guardar_objetivos(o2)
                     (st.success if ok_ else st.error)(msg_)
                     if ok_:
@@ -3451,12 +3472,58 @@ if tab_cyber is not None:
                         st.rerun()
         if meta_cy:
             av = fact / meta_cy * 100
-            esp = trans_h / dur_h * 100 if dur_h else 0
+            esp = esp_pct
             html(f"<div style='margin:6px 0 4px;font-size:13px;color:#CBD5E1'>Meta {fmt_compact(meta_cy)} · <b>{fmt_dec(av, 1)}%</b> logrado · "
                  f"debería ir {fmt_dec(esp, 0)}% según el tiempo transcurrido</div>"
                  f"<div style='height:12px;background:rgba(148,163,184,.15);border-radius:99px;position:relative;overflow:hidden'>"
                  f"<div style='width:{min(av, 100):.1f}%;height:100%;background:linear-gradient(90deg,#22D3EE,#A78BFA)'></div>"
                  f"<div style='position:absolute;left:{min(esp, 100):.1f}%;top:-2px;width:2px;height:16px;background:#F8FAFC'></div></div>")
+
+        # ---------- METAS POR MARCA Y CANAL ----------
+        if hay_det:
+            seccion("Metas", "Avance de metas por marca y canal",
+                    f"Avance = facturado / meta. Esperado a esta hora: {fmt_dec(esp_pct, 0)}% (tiempo transcurrido del evento). "
+                    "Proyección = ritmo actual llevado al cierre.")
+
+            def _pill_av(real_, meta_):
+                if not meta_:
+                    return "<span style='color:#475569'>—</span>"
+                a_ = real_ / meta_ * 100
+                cls_ = "ok" if a_ >= esp_pct else ("warn" if a_ >= esp_pct * 0.8 else "bad")
+                return f"<span class='pill {cls_}'>{fmt_dec(a_, 1)}%</span>"
+            filas = ""
+            tots = {c_: [0.0, 0.0] for c_ in CANALES}
+            for m_ in marcas_sel:
+                fila = f"<tr><td class='strong'><span class='dot' style='background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></span>{m_}</td>"
+                rt, mt = 0.0, 0.0
+                for c_ in CANALES:
+                    r_ = float(PE_T.loc[(PE_T["marca"] == m_) & (PE_T["canal"] == c_), "total_pedido"].sum())
+                    mm_ = meta_cm([c_], [m_])
+                    tots[c_][0] += r_
+                    tots[c_][1] += mm_
+                    rt, mt = rt + r_, mt + mm_
+                    fila += f"<td class='sep'>{fmt_compact(r_)}</td><td>{fmt_compact(mm_) if mm_ else '—'}</td><td>{_pill_av(r_, mm_)}</td>"
+                pr_ = rt / trans_h * dur_h if en_curso and trans_h >= 1 else (rt if ahora > ev_fin else 0)
+                cp_ = pr_ / mt * 100 if mt and pr_ else None
+                fila += (f"<td class='sep strong'>{fmt_compact(rt)}</td><td>{fmt_compact(mt) if mt else '—'}</td><td>{_pill_av(rt, mt)}</td>"
+                         f"<td>{fmt_compact(pr_) if pr_ else '—'}</td>"
+                         f"<td style='color:{'#34D399' if cp_ and cp_ >= 100 else '#F87171'};font-weight:700'>{fmt_dec(cp_, 0) + '%' if cp_ else '—'}</td></tr>")
+                filas += fila
+            rt = sum(v[0] for v in tots.values())
+            mt = sum(v[1] for v in tots.values())
+            pr_ = rt / trans_h * dur_h if en_curso and trans_h >= 1 else (rt if ahora > ev_fin else 0)
+            cp_ = pr_ / mt * 100 if mt and pr_ else None
+            filas += ("<tr class='total'><td>Total</td>" +
+                      "".join(f"<td class='sep'>{fmt_compact(tots[c_][0])}</td><td>{fmt_compact(tots[c_][1])}</td><td>{_pill_av(*tots[c_])}</td>" for c_ in CANALES) +
+                      f"<td class='sep'>{fmt_compact(rt)}</td><td>{fmt_compact(mt)}</td><td>{_pill_av(rt, mt)}</td><td>{fmt_compact(pr_) if pr_ else '—'}</td>"
+                      f"<td>{fmt_dec(cp_, 0) + '%' if cp_ else '—'}</td></tr>")
+            html("<div class='tbl-wrap'><table class='ftable compact'><thead><tr class='grp-h'><th></th>"
+                 f"<th colspan='3' class='sep' style='text-align:center;color:{COLOR_CANAL['Tienda Online']}'>Tienda Online</th>"
+                 f"<th colspan='3' class='sep' style='text-align:center;color:{COLOR_CANAL['MercadoLibre']}'>MercadoLibre</th>"
+                 "<th colspan='5' class='sep' style='text-align:center;color:#F8FAFC'>Total</th></tr>"
+                 "<tr><th>Marca</th><th class='sep'>Real</th><th>Meta</th><th>Avance</th><th class='sep'>Real</th><th>Meta</th><th>Avance</th>"
+                 f"<th class='sep'>Real</th><th>Meta</th><th>Avance</th><th>Proyección</th><th>Proy. vs meta</th></tr></thead><tbody>{filas}</tbody></table></div>")
+            st.caption("Avance en verde = va igual o mejor que el tiempo transcurrido · amarillo = hasta 20% por debajo · rojo = más atrasado.")
 
         # ---------- HORA A HORA ----------
         seccion("Ritmo", "Venta hora a hora", "Barras = cada hora del evento. Línea = acumulado. Punteada = Hot Sale 2026 (solo Tienda Online) a la misma hora del evento.")
