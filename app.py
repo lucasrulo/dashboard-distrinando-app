@@ -1758,7 +1758,7 @@ with tab_ads:
             if modo30:
                 html("<div class='hero-sub' style='margin-top:30px'>Período fijo: últimos 30 días (sin detalle diario).</div>")
             else:
-                per_ads = st.segmented_control("Período de la publicidad", ["7D", "14D", "30D", "60D", "90D", "Rango"], default="30D", key="ads_periodo") or "30D"
+                per_ads = st.segmented_control("Período de la publicidad", ["Último día", "7D", "14D", "30D", "60D", "90D", "Rango"], default="30D", key="ads_periodo") or "30D"
                 if per_ads == "Rango":
                     rg = st.date_input("Desde / hasta", value=(max(f_ads_min, f_ads_max - timedelta(days=29)), f_ads_max),
                                        min_value=f_ads_min, max_value=f_ads_max, key="ads_rango", format="DD/MM/YYYY")
@@ -1768,7 +1768,7 @@ with tab_ads:
                         a0 = a1 = rg[0]
                 else:
                     a1 = f_ads_max
-                    a0 = max(f_ads_min, a1 - timedelta(days=int(per_ads[:-1]) - 1))
+                    a0 = a1 if per_ads == "Último día" else max(f_ads_min, a1 - timedelta(days=int(per_ads[:-1]) - 1))
                 nd = (a1 - a0).days + 1
                 pa0, pa1 = a0 - timedelta(days=nd), a0 - timedelta(days=1)
         with f1:
@@ -1776,12 +1776,134 @@ with tab_ads:
                                            placeholder="Todas las campañas · escribí para buscar por nombre o marca",
                                            format_func=lambda x: str(nombres_c.get(x, x)))
             camp_sel = camp_elegidas or camp_opts
-        html(f"<div class='hero-sub'>📅 <b>{a0:%d/%m/%Y} → {a1:%d/%m/%Y}</b> ({nd} días)" + ("" if modo30 else f" · comparado con {pa0:%d/%m} → {pa1:%d/%m}") + " · "
+        html(f"<div class='hero-sub'>📅 <b>{a0:%d/%m/%Y} → {a1:%d/%m/%Y}</b> ({nd} día{'s' if nd != 1 else ''})" + ("" if modo30 else f" · comparado con {pa0:%d/%m} → {pa1:%d/%m}") + " · "
              f"MeLi consolida la publicidad 1 vez por día (datos hasta {f_ads_max:%d/%m}).</div>")
         met_ef = st.segmented_control("Analizar eficiencia por", ["ACOS", "ROAS"], default="ACOS", key="ads_metrica",
                                       help="ACOS = inversión / ventas por ads (más bajo es mejor). ROAS = ventas por ads / inversión (más alto es mejor). "
                                            "Son la misma medida invertida: ACOS 10% = ROAS 10x.") or "ACOS"
         EsR = met_ef == "ROAS"
+        # ---------- HOY EN VIVO: cuánto de la venta de hoy viene por publicidad (estimado) ----------
+        seccion("Hoy en vivo", "¿Cuánto de lo que vendemos hoy viene por publicidad?",
+                "MeLi recién informa la publicidad del día al día siguiente. Para hoy se estima: la venta real de hoy de cada publicación × "
+                "el % que esa publicación vendió por publicidad en los últimos 7 días (indirectas: proporción de la marca).")
+        _vh = base_net[(base_net["canal"] == "MercadoLibre") & base_net["marca"].astype(str).isin(marcas_ads) & (base_net["dia"] == hoy)]
+        if _vh.empty:
+            st.info("Todavía no hay ventas de MercadoLibre hoy para las marcas elegidas.")
+        else:
+            _w = "m7" if f"m7_direct_units_quantity" in a_items.columns else "m30"
+            _ai = a_items[a_items["marca"].isin(marcas_ads)].copy() if not a_items.empty else pd.DataFrame(columns=["item_id"])
+            for c_ in ["direct_units_quantity", "indirect_units_quantity", "organic_units_quantity", "direct_amount", "indirect_amount",
+                       "organic_units_amount", "cost", "total_amount", "clicks"]:
+                _ai[c_] = pd.to_numeric(_ai.get(f"{_w}_{c_}", 0), errors="coerce").fillna(0)
+            _ai["item_id"] = _ai["item_id"].astype(str)
+            _ai["en_campania"] = (_ai.get("estado_ad", "").astype(str) == "active") & _ai["campaign_id"].isin(camp_reales)
+            _ai = _ai.sort_values("en_campania", ascending=False).drop_duplicates("item_id")
+            _den = _ai["direct_units_quantity"] + _ai["organic_units_quantity"]
+            _ai["sh_dir"] = np.where(_den > 0, _ai["direct_units_quantity"] / _den.where(_den > 0, 1), 0).clip(0, 1)
+            # Venta de hoy por publicación
+            _vh = _vh.assign(item_id=_vh["item_id"].astype(str), marca=_vh["marca"].astype(str))
+            _it = _vh.groupby(["marca", "item_id"], observed=True).agg(titulo=("producto", "first"), u_hoy=("cantidad", "sum"),
+                                                                       f_hoy=("subtotal_producto", "sum")).reset_index()
+            _it = _it.merge(_ai[["item_id", "sh_dir", "en_campania", "campaign_id", "cost", "total_amount"]], on="item_id", how="left")
+            _it["sh_dir"] = _it["sh_dir"].fillna(0)
+            _it["en_campania"] = _it["en_campania"].fillna(False).astype(bool)
+            _it["u_dir"] = _it["u_hoy"] * _it["sh_dir"]
+            _it["f_dir"] = _it["f_hoy"] * _it["sh_dir"]
+            # Indirectas: proporción por marca de los últimos 7 días (unidades indirectas / unidades no directas vendidas)
+            _r1 = f_ads_max
+            _r0 = _r1 - timedelta(days=6)
+            _b7 = base_net[(base_net["canal"] == "MercadoLibre") & base_net["marca"].astype(str).isin(marcas_ads) & (base_net["dia"] >= _r0) & (base_net["dia"] <= _r1)]
+            _b7m = _b7.groupby(_b7["marca"].astype(str)).agg(u7=("cantidad", "sum"), f7=("subtotal_producto", "sum"))
+            _a7m = _ai.groupby("marca")[["direct_units_quantity", "indirect_units_quantity", "direct_amount", "indirect_amount"]].sum()
+            _rm = _b7m.join(_a7m, how="left").fillna(0)
+            _rm["r_ind_u"] = (_rm["indirect_units_quantity"] / (_rm["u7"] - _rm["direct_units_quantity"]).clip(lower=1)).clip(0, 0.9)
+            _rm["r_ind_f"] = (_rm["indirect_amount"] / (_rm["f7"] - _rm["direct_amount"]).clip(lower=1)).clip(0, 0.9)
+            _mh = _it.groupby("marca").agg(u_hoy=("u_hoy", "sum"), f_hoy=("f_hoy", "sum"), u_dir=("u_dir", "sum"), f_dir=("f_dir", "sum"))
+            _mh = _mh.join(_rm[["r_ind_u", "r_ind_f"]], how="left").fillna(0)
+            _mh["u_ind"] = (_mh["u_hoy"] - _mh["u_dir"]) * _mh["r_ind_u"]
+            _mh["f_ind"] = (_mh["f_hoy"] - _mh["f_dir"]) * _mh["r_ind_f"]
+            _mh["u_ads"] = _mh["u_dir"] + _mh["u_ind"]
+            _mh["f_ads"] = _mh["f_dir"] + _mh["f_ind"]
+            T = _mh.sum(numeric_only=True)
+            _pf = T["f_ads"] / T["f_hoy"] * 100 if T["f_hoy"] else 0
+            _pu = T["u_ads"] / T["u_hoy"] * 100 if T["u_hoy"] else 0
+            cc = st.columns(4)
+            cc[0].markdown(kpi_card(f"Venta MeLi hoy (hasta {ahora:%H:%M})", fmt_kpi(T["f_hoy"]), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span><b>{fmt_num(T['u_hoy'])}</b> unidades</span></div>", "#FFE600", sm=True), unsafe_allow_html=True)
+            cc[1].markdown(kpi_card("Por publicidad (estimado)", fmt_kpi(T["f_ads"]), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span><b>{fmt_dec(_pf)}%</b> de la facturación</span><span><b>{fmt_num(round(T['u_ads']))}</b> u. ({fmt_dec(_pu)}%)</span></div>", "#34D399", sm=True), unsafe_allow_html=True)
+            cc[2].markdown(kpi_card("Directa / Indirecta (est.)", f"{fmt_compact(T['f_dir'])} / {fmt_compact(T['f_ind'])}", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(round(T['u_dir']))} u. directas</span><span>{fmt_num(round(T['u_ind']))} u. indirectas</span></div>", "#22D3EE", sm=True), unsafe_allow_html=True)
+            cc[3].markdown(kpi_card("Sin publicidad (orgánica)", fmt_kpi(T["f_hoy"] - T["f_ads"]), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(100 - _pf)}% de la facturación</span><span>{fmt_num(round(T['u_hoy'] - T['u_ads']))} u.</span></div>", "#A78BFA", sm=True), unsafe_allow_html=True)
+            st.write("")
+            _tm = _mh.reset_index().rename(columns={"index": "marca"})
+            _tm = pd.DataFrame({"Marca": _tm["marca"], "Unidades hoy": _tm["u_hoy"].round().astype(int),
+                                "Unidades por ads": _tm["u_ads"].round().astype(int),
+                                "% unidades por ads": (_tm["u_ads"] / _tm["u_hoy"].where(_tm["u_hoy"] > 0) * 100).round(1),
+                                "Facturación hoy": _tm["f_hoy"].round(), "Facturación por ads": _tm["f_ads"].round(),
+                                "% facturación por ads": (_tm["f_ads"] / _tm["f_hoy"].where(_tm["f_hoy"] > 0) * 100).round(1)}).sort_values("Facturación hoy", ascending=False)
+            st.dataframe(_tm, hide_index=True, width="stretch",
+                         column_config={"Facturación hoy": st.column_config.NumberColumn(format="$ %,.0f"),
+                                        "Facturación por ads": st.column_config.NumberColumn(format="$ %,.0f"),
+                                        "% unidades por ads": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                                        "% facturación por ads": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)})
+
+            # ---------- PUNTOS DE MEJORA DE HOY ----------
+            st.markdown("**🎯 Puntos de mejora para hoy**")
+            _camp_nom = lambda x: str(nombres_c.get(x, "")) if pd.notna(x) else ""
+            p1, p2, p3, p4 = st.tabs(["🟢 Venden hoy sin publicidad", "🔵 Dependen de la publicidad", "🔴 Publicidad que no rinde", "⬆️ Campañas cortas de presupuesto"])
+            with p1:
+                _s = _it[~_it["en_campania"]].sort_values("f_hoy", ascending=False)
+                st.caption(f"{len(_s)} publicaciones vendieron hoy sin estar en una campaña activa. Ya demuestran demanda: sumarlas a una campaña puede multiplicar la venta.")
+                st.dataframe(pd.DataFrame({"Marca": _s["marca"], "Publicación": _s["item_id"], "Producto": _s["titulo"], "Unidades hoy": _s["u_hoy"].astype(int),
+                                           "Facturación hoy": _s["f_hoy"].round(), "Acción": "➕ Sumar a campaña"}).head(100),
+                             hide_index=True, width="stretch", column_config={"Facturación hoy": st.column_config.NumberColumn(format="$ %,.0f")})
+            with p2:
+                _s = _it[_it["en_campania"] & (_it["sh_dir"] >= 0.5)].sort_values("f_dir", ascending=False)
+                st.caption("Publicaciones que hoy venden y donde la mitad o más de la venta viene del anuncio. Si la campaña se queda sin presupuesto, esta venta se cae: cuidar el presupuesto.")
+                st.dataframe(pd.DataFrame({"Marca": _s["marca"], "Publicación": _s["item_id"], "Producto": _s["titulo"], "Campaña": _s["campaign_id"].map(_camp_nom),
+                                           "Unidades hoy": _s["u_hoy"].astype(int), "% por anuncio (7d)": (_s["sh_dir"] * 100).round(0),
+                                           "Facturación hoy": _s["f_hoy"].round(), "Acción": "🛡️ No cortar presupuesto"}).head(100),
+                             hide_index=True, width="stretch", column_config={"Facturación hoy": st.column_config.NumberColumn(format="$ %,.0f"),
+                                                                              "% por anuncio (7d)": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            with p3:
+                _g = _ai[_ai["en_campania"] & (_ai["cost"] > 0)].copy()
+                _acos_marca = (_g.groupby("marca")["cost"].sum() / _g.groupby("marca")["total_amount"].sum().replace(0, np.nan) * 100)
+                _g["acos"] = np.where(_g["total_amount"] > 0, _g["cost"] / _g["total_amount"].where(_g["total_amount"] > 0, 1) * 100, np.nan)
+                _g["acos_marca"] = _g["marca"].map(_acos_marca)
+                _uh = _it.set_index("item_id")["u_hoy"]
+                _g["u_hoy"] = _g["item_id"].map(_uh).fillna(0).astype(int)
+                _mal = _g[(_g["total_amount"] == 0) | (_g["acos"] > 2 * _g["acos_marca"])].sort_values("cost", ascending=False)
+                st.caption("Anuncios activos que en los últimos 7 días gastaron sin vender o con un ACOS de más del doble del promedio de su marca. "
+                           "Es plata que se puede mover a los productos que sí venden.")
+                st.dataframe(pd.DataFrame({"Marca": _mal["marca"], "Publicación": _mal["item_id"], "Producto": _mal.get("titulo", ""),
+                                           "Campaña": _mal["campaign_id"].map(_camp_nom), "Inversión 7d": _mal["cost"].round(),
+                                           "Ventas por ads 7d": _mal["total_amount"].round(), "ACOS 7d": _mal["acos"].round(0),
+                                           "ACOS marca": _mal["acos_marca"].round(0), "Unidades hoy": _mal["u_hoy"],
+                                           "Acción": np.where(_mal["total_amount"] == 0, "⏸️ Pausar o revisar precio/fotos", "🔻 Bajar ACOS objetivo / revisar")}).head(100),
+                             hide_index=True, width="stretch",
+                             column_config={"Inversión 7d": st.column_config.NumberColumn(format="$ %,.0f"), "Ventas por ads 7d": st.column_config.NumberColumn(format="$ %,.0f"),
+                                            "ACOS 7d": st.column_config.NumberColumn(format="%.0f%%"), "ACOS marca": st.column_config.NumberColumn(format="%.0f%%")})
+            with p4:
+                if a_camp.empty or "is_lost_impression_share_by_budget" not in a_camp.columns:
+                    st.caption("MeLi no devolvió la pérdida de impresiones por presupuesto.")
+                else:
+                    _c = a_camp[a_camp["marca"].isin(marcas_ads)].copy()
+                    _c["perdida"] = _pct_norm(_c["is_lost_impression_share_by_budget"])
+                    _c = _c[(_c["estado"].astype(str) == "active") & (_c["perdida"] >= 10)].sort_values("perdida", ascending=False)
+                    st.caption("Campañas activas que pierden impresiones porque se les termina el presupuesto. En Cyber el tráfico se multiplica: "
+                               "subirles el presupuesto es la palanca más rápida.")
+                    st.dataframe(pd.DataFrame({"Marca": _c["marca"], "Campaña": _c["campaign_id"].map(_camp_nom),
+                                               "Presupuesto diario": pd.to_numeric(_c.get("presupuesto"), errors="coerce"),
+                                               "% impresiones perdidas por presupuesto": _c["perdida"].round(0),
+                                               "Acción": "⬆️ Subir presupuesto"}),
+                                 hide_index=True, width="stretch",
+                                 column_config={"Presupuesto diario": st.column_config.NumberColumn(format="$ %,.0f"),
+                                                "% impresiones perdidas por presupuesto": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            st.caption(f"Estimación: % por publicidad de cada publicación según sus últimos 7 días de anuncios (datos MeLi hasta {f_ads_max:%d/%m}). "
+                       "El número exacto de hoy lo informa MeLi mañana.")
+
         dsel = a_dia[a_dia["campaign_id"].isin(camp_sel)]
         cur = dsel[(dsel["dia"] >= a0) & (dsel["dia"] <= a1)]
         if modo30:
