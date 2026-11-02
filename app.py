@@ -363,7 +363,9 @@ def leer_csv_repo(nombre):
         r = requests.get(url, timeout=60)
     if r.status_code != 200:
         return pd.DataFrame()
-    return pd.read_csv(io.BytesIO(r.content), low_memory=False)
+    out = pd.read_csv(io.BytesIO(r.content), low_memory=False)
+    del r
+    return out
 
 
 def norm_medio(v):
@@ -404,7 +406,7 @@ def norm_cuotas(v):
     return "1 pago"
 
 
-@st.cache_data(ttl=60, show_spinner="Cargando ventas…")
+@st.cache_data(ttl=300, max_entries=1, show_spinner="Cargando ventas…")
 def load_data():
     partes = []
     for nombre, canal in [("ventas_hot_sale.csv", "Tienda Online"), ("ventas_meli.csv", "MercadoLibre")]:
@@ -490,7 +492,7 @@ def load_data():
     return df
 
 
-@st.cache_data(ttl=240, show_spinner=False)
+@st.cache_data(ttl=240, max_entries=1, show_spinner=False)
 def estado_robot():
     """Mira la última corrida del robot de ventas. GitHub no garantiza el cron de 5 min (a veces pasa horas
     sin correr), así que si la última corrida tiene más de 10 min y no hay otra en curso, la dispara.
@@ -515,7 +517,7 @@ def estado_robot():
         return None
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=600, max_entries=16, show_spinner=False)
 def load_aux(nombre):
     """CSVs secundarios (catálogo, publicaciones, clientes). Si no existen todavía, vuelve vacío."""
     try:
@@ -580,7 +582,7 @@ def _gh_headers():
     return h
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=120, max_entries=1, show_spinner=False)
 def load_objetivos():
     try:
         r = requests.get(f"https://api.github.com/repos/{REPO_DATOS}/contents/{OBJ_ARCHIVO_REPO}",
@@ -3318,7 +3320,7 @@ CYBER_FIN_DEF = datetime(2026, 11, 9, 23, 59, 59, tzinfo=ZONA_AR)
 CYBER_PREV_INI = datetime(2025, 11, 3, 0, 0, tzinfo=ZONA_AR)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, max_entries=1, show_spinner=False)
 def cyber_prev_ref():
     """Cyber Monday 2025 (3/11 al 9/11/2025) desde cyber_2025.csv (archivo liviano). Si todavía no existe, no hay comparativa."""
     try:
@@ -3715,4 +3717,6 @@ if tab_cyber is not None:
                 html("<div class='tbl-wrap'><table class='ftable'><thead><tr><th>Hora</th><th>Canal</th><th>Marca</th><th style='text-align:left'>Producto</th><th>Total</th></tr></thead>"
                      f"<tbody>{filas}</tbody></table></div>")
 
-
+# Liberar memoria al final de cada ejecución (evita que la app se caiga por memoria)
+import gc
+gc.collect()
