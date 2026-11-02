@@ -3352,17 +3352,14 @@ if tab_cyber is not None:
         en_curso = ev_ini <= ahora <= ev_fin
         trans_h = min(max((ahora - ev_ini).total_seconds() / 3600, 0), dur_h)
 
-        Ev_all = base_m[(base_m["fecha"] >= ev_ini) & (base_m["fecha"] <= ev_fin)]
-        Ev = Ev_all[Ev_all["es_reverso"] == 0]
-        PE = a_pedidos(Ev)
-        PE["canal"] = PE["canal"].astype(str)
-        PE["marca"] = PE["marca"].astype(str)
-
+        Ev_T = base_net[(base_net["fecha"] >= ev_ini) & (base_net["fecha"] <= ev_fin)]
+        PE_T = a_pedidos(Ev_T)
+        PE_T["canal"] = PE_T["canal"].astype(str)
+        PE_T["marca"] = PE_T["marca"].astype(str)
         # Día normal de referencia: promedio diario de los 28 días previos al evento
-        ref = base_net[(base_net["fecha"] < ev_ini) & (base_net["fecha"] >= ev_ini - timedelta(days=28))]
-        Pref = a_pedidos(ref)
-        dia_normal = float(Pref["total_pedido"].sum()) / 28 if len(Pref) else 0
-        hora_normal = dia_normal / 24
+        ref_T = base_net[(base_net["fecha"] < ev_ini) & (base_net["fecha"] >= ev_ini - timedelta(days=28))]
+        Pref_T = a_pedidos(ref_T)
+        Pref_T["canal"] = Pref_T["canal"].astype(str)
 
         # ---------- cabecera ----------
         if ahora < ev_ini:
@@ -3383,6 +3380,41 @@ if tab_cyber is not None:
              f"<div style='text-align:right'><div style='font-size:20px;font-weight:800;color:{col_e}'>{estado_txt}</div>"
              f"<div class='hero-sub'>Última venta registrada: {ult:%d/%m %H:%M} hs · se actualiza cada ~5 min</div></div></div></div>")
 
+        # ---------- TIENDA vs MELI ----------
+        cc_ = st.columns(2)
+        tot_T = float(PE_T["total_pedido"].sum())
+        for col, c_ in zip(cc_, CANALES):
+            d_ = PE_T[PE_T["canal"] == c_]
+            f_, n_, u_ = float(d_["total_pedido"].sum()), len(d_), float(d_["unidades"].sum())
+            dn_ = float(Pref_T.loc[Pref_T["canal"] == c_, "total_pedido"].sum()) / 28 if len(Pref_T) else 0
+            h1_ = d_[d_["fecha"] >= ahora - timedelta(hours=1)]
+            rit_ = f_ / trans_h if trans_h > 0 else 0
+            pr_ = rit_ * dur_h if en_curso and trans_h >= 1 else (f_ if ahora > ev_fin else 0)
+            x_ = f_ / (dn_ * max(trans_h / 24, 1 / 24)) if dn_ and trans_h > 0 else None
+            celdas = [("Facturación", fmt_compact(f_), f"{fmt_dec(f_ / tot_T * 100 if tot_T else 0, 0)}% del total"),
+                      ("Pedidos", fmt_num(n_), f"ticket {fmt_compact(f_ / n_ if n_ else 0)}"),
+                      ("Unidades", fmt_num(u_), f"{fmt_dec(u_ / n_ if n_ else 0, 2)} por pedido"),
+                      ("Última hora", fmt_compact(float(h1_["total_pedido"].sum())), f"{fmt_num(len(h1_))} pedidos"),
+                      ("Ritmo vs normal", (fmt_dec(x_, 1) + "x") if x_ else "—", "promedio 28 días previos"),
+                      ("Proyección", fmt_compact(pr_) if pr_ else "—", f"{fmt_compact(rit_)}/hora")]
+            cuerpo = "".join(f"<div style='flex:1 1 30%;min-width:120px;padding:10px 12px;background:rgba(148,163,184,.06);border-radius:12px'>"
+                             f"<div style='font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:700'>{a}</div>"
+                             f"<div style='font-size:22px;font-weight:800;color:#F8FAFC;margin:2px 0'>{b}</div>"
+                             f"<div style='font-size:11.5px;color:var(--muted)'>{c}</div></div>" for a, b, c in celdas)
+            col.markdown(f"<div style='background:var(--card);border:1px solid var(--border);border-top:3px solid {COLOR_CANAL[c_]};border-radius:18px;padding:14px 16px'>"
+                         f"<div style='font-size:15px;font-weight:800;color:{COLOR_CANAL[c_]};margin-bottom:10px'>● {c_}</div>"
+                         f"<div style='display:flex;flex-wrap:wrap;gap:8px'>{cuerpo}</div></div>", unsafe_allow_html=True)
+        st.write("")
+        canal_cy = st.segmented_control("Ver el detalle de", ["General", "Tienda Online", "MercadoLibre"], default="General", key="cy_canal") or "General"
+        if canal_cy == "General":
+            Ev, PE, Pref = Ev_T, PE_T, Pref_T
+        else:
+            Ev = Ev_T[Ev_T["canal"].astype(str) == canal_cy]
+            PE = PE_T[PE_T["canal"] == canal_cy]
+            Pref = Pref_T[Pref_T["canal"] == canal_cy]
+        dia_normal = float(Pref["total_pedido"].sum()) / 28 if len(Pref) else 0
+        hora_normal = dia_normal / 24
+
         # ---------- KPIs ----------
         fact, ped, uni = float(PE["total_pedido"].sum()), len(PE), float(PE["unidades"].sum())
         tk = fact / ped if ped else 0
@@ -3390,9 +3422,12 @@ if tab_cyber is not None:
         ritmo = fact / trans_h if trans_h > 0 else 0
         proy = ritmo * dur_h if en_curso and trans_h >= 1 else (fact if ahora > ev_fin else 0)
         meta_cy = float((objetivos.get("cyber", {}) or {}).get("facturacion", 0)) if isinstance(objetivos, dict) else 0
+        meta_tot = meta_cy
+        if canal_cy != "General":
+            meta_cy = 0   # la meta es total (ambos canales)
         k = st.columns(6)
         k[0].markdown(kpi_card("Facturación del evento", fmt_compact(fact),
-                               f"<span class='delta up'>{fmt_dec(fact / dia_normal, 1)}x un día normal</span>" if dia_normal and fact else "",
+                               f"<span class='delta up'>{fmt_dec(fact / (dia_normal * max(trans_h / 24, 1 / 24)), 1)}x el ritmo normal</span>" if dia_normal and fact and trans_h > 0 else "",
                                split_html(por_canal_vals(PE, "total_pedido")), "#22D3EE"), unsafe_allow_html=True)
         k[1].markdown(kpi_card("Pedidos", fmt_num(ped), "", split_html(por_canal_vals(PE, "ords")), "#A78BFA"), unsafe_allow_html=True)
         k[2].markdown(kpi_card("Unidades", fmt_num(uni), "", f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(uni / ped if ped else 0, 2)} por pedido</span></div>", "#34D399"), unsafe_allow_html=True)
@@ -3405,7 +3440,7 @@ if tab_cyber is not None:
                                f"<div class='split-legend' style='margin-top:10px'><span>ritmo {fmt_compact(ritmo)}/hora</span></div>", "#FFE600"), unsafe_allow_html=True)
         if ES_ADMIN:
             with st.expander("🎯 Meta de facturación del evento", expanded=False):
-                nv = st.number_input("Meta total (todas las marcas, ambos canales)", min_value=0, value=int(meta_cy), step=10_000_000, key="cy_meta")
+                nv = st.number_input("Meta total (todas las marcas, ambos canales)", min_value=0, value=int(meta_tot), step=10_000_000, key="cy_meta")
                 if st.button("Guardar meta", key="cy_meta_btn"):
                     o2 = dict(objetivos) if isinstance(objetivos, dict) else {}
                     o2["cyber"] = {"facturacion": nv}
@@ -3424,10 +3459,12 @@ if tab_cyber is not None:
                  f"<div style='position:absolute;left:{min(esp, 100):.1f}%;top:-2px;width:2px;height:16px;background:#F8FAFC'></div></div>")
 
         # ---------- HORA A HORA ----------
-        seccion("Ritmo", "Venta hora a hora", "Barras = facturación de cada hora del evento. Línea = acumulado. Punteada = Hot Sale 2026 (solo Tienda Online) a la misma hora del evento.")
-        horas = pd.date_range(ev_ini, min(ahora, ev_fin) if ahora >= ev_ini else ev_ini, freq="h", tz=ZONA_AR)
+        seccion("Ritmo", "Venta hora a hora", "Barras = cada hora del evento. Línea = acumulado. Punteada = Hot Sale 2026 (solo Tienda Online) a la misma hora del evento.")
+        met_cy = st.segmented_control("Métrica", ["Facturación", "Pedidos", "Unidades"], default="Facturación", key="cy_met") or "Facturación"
+        fmt_cy = fmt_compact if met_cy == "Facturación" else fmt_num
         if len(PE):
-            ph = PE.assign(h=PE["fecha"].dt.floor("h")).groupby(["h", "canal"])["total_pedido"].sum().unstack(fill_value=0)
+            _g = PE.assign(h=PE["fecha"].dt.floor("h")).groupby(["h", "canal"])
+            ph = (_g["total_pedido"].sum() if met_cy == "Facturación" else (_g.size() if met_cy == "Pedidos" else _g["unidades"].sum())).unstack(fill_value=0)
         else:
             ph = pd.DataFrame()
         from plotly.subplots import make_subplots as _msp_c
@@ -3437,26 +3474,31 @@ if tab_cyber is not None:
                 fig.add_bar(x=ph.index, y=ph[c_], name=c_, marker_color=COLOR_CANAL[c_])
         if len(ph):
             fig.add_scatter(x=ph.index, y=ph.sum(axis=1).cumsum(), name="Acumulado", line=dict(color="#F8FAFC", width=3), secondary_y=True)
-        hs, hs_ini = hot_sale_ref()
+        hs, hs_ini = hot_sale_ref() if canal_cy != "MercadoLibre" else (pd.DataFrame(), None)
         if len(hs):
             hs_m = hs[hs["marca"].isin(marcas_sel)]
-            hph = hs_m.drop_duplicates(["marca", "id_pedido"]).groupby("hora_ev")["total_pedido"].sum().reindex(range(int(dur_h) + 1), fill_value=0)
+            _hp = hs_m.drop_duplicates(["marca", "id_pedido"])
+            hph = (_hp.groupby("hora_ev")["total_pedido"].sum() if met_cy == "Facturación" else
+                   (_hp.groupby("hora_ev").size() if met_cy == "Pedidos" else
+                    pd.to_numeric(hs_m["cantidad"], errors="coerce").groupby(hs_m["hora_ev"]).sum())).reindex(range(int(dur_h) + 1), fill_value=0)
             n_ = int(trans_h) + 1 if en_curso else len(hph)
             xs = [ev_ini + timedelta(hours=i) for i in range(len(hph))]
             fig.add_scatter(x=xs[:max(n_, 1) + 6], y=hph.cumsum().values[:max(n_, 1) + 6], name=f"Hot Sale (desde {hs_ini:%d/%m}) acumulado",
                             line=dict(color="#FBBF24", width=2, dash="dot"), secondary_y=True)
         fig.update_layout(barmode="stack", bargap=0.15, hovermode="x unified", legend_title_text="")
-        fig.update_yaxes(title_text="$ por hora", secondary_y=False)
-        fig.update_yaxes(title_text="$ acumulado", secondary_y=True, showgrid=False, rangemode="tozero")
+        _u = {"Facturación": "$", "Pedidos": "pedidos", "Unidades": "unidades"}[met_cy]
+        fig.update_yaxes(title_text=f"{_u} por hora", secondary_y=False)
+        fig.update_yaxes(title_text=f"{_u} acumulado", secondary_y=True, showgrid=False, rangemode="tozero")
         fig.update_yaxes(rangemode="tozero", secondary_y=False)
         fig = estilo(fig, 400)
         fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=60))
         st.plotly_chart(fig, width="stretch")
         if len(hs) and en_curso:
             hs_hasta = hph.cumsum().values[min(int(trans_h), len(hph) - 1)]
-            tienda_now = float(PE.loc[PE["canal"] == "Tienda Online", "total_pedido"].sum())
+            _pt = PE[PE["canal"] == "Tienda Online"]
+            tienda_now = float(_pt["total_pedido"].sum() if met_cy == "Facturación" else (len(_pt) if met_cy == "Pedidos" else _pt["unidades"].sum()))
             if hs_hasta:
-                st.caption((f"Tienda Online va {fmt_compact(tienda_now)} contra {fmt_compact(hs_hasta)} del Hot Sale a la misma hora "
+                st.caption((f"Tienda Online va {fmt_cy(tienda_now)} {'' if met_cy == 'Facturación' else met_cy.lower()} contra {fmt_cy(hs_hasta)} del Hot Sale a la misma hora "
                             f"(**{fmt_dec((tienda_now / hs_hasta - 1) * 100, 0)}%**).").replace("$", "\\$"))
 
         # ---------- MARCAS ----------
@@ -3475,6 +3517,44 @@ if tab_cyber is not None:
                                   f"<div class='split-legend' style='margin-top:6px'><span>{fmt_num(len(d_))} pedidos</span><span>{fmt_num(d_['unidades'].sum())} u.</span></div>"
                                   + (f"<div class='split-legend' style='margin-top:4px'>{hs_txt}</div>" if hs_txt else ""),
                                   PALETA_MARCAS.get(m_, "#94A3B8"), sm=True), unsafe_allow_html=True)
+
+        # ---------- SHARE POR MARCA ----------
+        seccion("Participación", "Share de cada marca en el evento",
+                "Qué porcentaje del total aporta cada marca, en facturación y en unidades (según el canal elegido arriba).")
+        if PE.empty:
+            st.info("Todavía no hay ventas del evento.")
+        else:
+            sh = PE.groupby("marca").agg(fact=("total_pedido", "sum"), uni=("unidades", "sum"), ped=("id_pedido", "count")).reindex(
+                [m_ for m_ in marcas_sel if m_ in set(PE["marca"])]).fillna(0)
+            g1, g2 = st.columns(2)
+            for col, campo, tit in [(g1, "fact", "Share por facturación"), (g2, "uni", "Share por unidades")]:
+                fig = go.Figure(go.Pie(labels=sh.index, values=sh[campo], hole=0.6, sort=False, textinfo="percent+label",
+                                       marker=dict(colors=[PALETA_MARCAS.get(m_, "#94A3B8") for m_ in sh.index], line=dict(color="#060A13", width=2)),
+                                       hovertemplate="%{label}<br>%{percent} · " + ("$%{value:,.0f}" if campo == "fact" else "%{value:,.0f} u.") + "<extra></extra>"))
+                fig.update_layout(title=tit, showlegend=False,
+                                  annotations=[dict(text=(fmt_compact(sh[campo].sum()) if campo == "fact" else fmt_num(sh[campo].sum()) + " u."),
+                                                    showarrow=False, font=dict(size=18, color="#F8FAFC"))])
+                col.plotly_chart(estilo(fig, 340), width="stretch", key=f"cy_share_{campo}")
+            tf, tu, tp_ = sh["fact"].sum(), sh["uni"].sum(), sh["ped"].sum()
+            canal_m = PE.groupby(["marca", "canal"])["total_pedido"].sum().unstack(fill_value=0)
+            filas = ""
+            for m_, r_ in sh.sort_values("fact", ascending=False).iterrows():
+                sf, su = r_["fact"] / tf * 100 if tf else 0, r_["uni"] / tu * 100 if tu else 0
+                dif = sf - su
+                ct = " · ".join(f"{CORTO.get(c_, c_)} {fmt_dec(canal_m.loc[m_, c_] / r_['fact'] * 100 if r_['fact'] else 0, 0)}%"
+                                for c_ in CANALES if c_ in canal_m.columns and m_ in canal_m.index)
+                filas += (f"<tr><td class='strong'><span class='dot' style='background:{PALETA_MARCAS.get(m_, '#94A3B8')}'></span>{m_}</td>"
+                          f"<td>{fmt_ars(r_['fact'])}</td><td class='strong'>{fmt_dec(sf)}%</td>"
+                          f"<td class='sep'>{fmt_num(r_['uni'])}</td><td class='strong'>{fmt_dec(su)}%</td>"
+                          f"<td class='sep'>{fmt_num(r_['ped'])}</td><td>{fmt_dec(r_['ped'] / tp_ * 100 if tp_ else 0)}%</td>"
+                          f"<td>{fmt_ars(r_['fact'] / r_['ped'] if r_['ped'] else 0)}</td>"
+                          f"<td>{fmt_ars(r_['fact'] / r_['uni'] if r_['uni'] else 0)}</td>"
+                          f"<td style='color:{'#34D399' if dif > 0 else '#F87171'}'>{'+' if dif > 0 else ''}{fmt_dec(dif)} pp</td>"
+                          f"<td style='text-align:left'>{ct}</td></tr>")
+            html("<div class='tbl-wrap'><table class='ftable compact'><thead><tr><th>Marca</th><th>Facturación</th><th>Share $</th>"
+                 "<th class='sep'>Unidades</th><th>Share u.</th><th class='sep'>Pedidos</th><th>Share ped.</th><th>Ticket</th><th>Precio prom. u.</th>"
+                 f"<th>Share $ − u.</th><th style='text-align:left'>Tienda / MeLi</th></tr></thead><tbody>{filas}</tbody></table></div>")
+            st.caption("'Share $ − u.' positivo = la marca pesa más en plata que en unidades (vende productos más caros que el promedio).")
 
         # ---------- PRODUCTOS + STOCK ----------
         seccion("Productos", "Lo más vendido y riesgo de quiebre",
