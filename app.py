@@ -3315,6 +3315,33 @@ CYBER_INI_DEF = datetime(2026, 11, 2, 0, 0, tzinfo=ZONA_AR)
 CYBER_FIN_DEF = datetime(2026, 11, 9, 23, 59, 59, tzinfo=ZONA_AR)
 
 
+CYBER_PREV_INI = datetime(2025, 11, 3, 0, 0, tzinfo=ZONA_AR)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cyber_prev_ref():
+    """Cyber Monday 2025 (3/11 al 9/11/2025) desde cyber_2025.csv. Si no está, se usa el Hot Sale 2026 (solo Tienda)."""
+    try:
+        c = leer_csv_repo("cyber_2025.csv")
+    except Exception:
+        c = pd.DataFrame()
+    if not c.empty:
+        c = c[pd.to_numeric(c["es_reverso"], errors="coerce").fillna(0) == 0].copy()
+        c["fecha"] = pd.to_datetime(c["fecha"], errors="coerce", format="mixed", utc=True).dt.tz_convert(ZONA_AR)
+        c = c.dropna(subset=["fecha"])
+        c["hora_ev"] = ((c["fecha"] - CYBER_PREV_INI).dt.total_seconds() // 3600).astype(int)
+        c["canal"] = c["canal"].astype(str)
+        c["marca"] = c["marca"].astype(str)
+        return c, "Cyber Monday 2025", CYBER_PREV_INI.date()
+    hs, ini = hot_sale_ref()
+    if len(hs):
+        hs = hs.copy()
+        hs["canal"] = "Tienda Online"
+        hs["marca"] = hs["marca"].astype(str)
+        return hs, "Hot Sale 2026 (solo Tienda)", ini
+    return pd.DataFrame(), "", None
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def hot_sale_ref():
     """Hot Sale 2026 (Tienda Online) desde el histórico: los 3 días seguidos de mayo-junio con más venta."""
@@ -3362,6 +3389,27 @@ if tab_cyber is not None:
         ref_T = base_net[(base_net["fecha"] < ev_ini) & (base_net["fecha"] >= ev_ini - timedelta(days=28))]
         Pref_T = a_pedidos(ref_T)
         Pref_T["canal"] = Pref_T["canal"].astype(str)
+        prev_all, prev_lbl, prev_ini = cyber_prev_ref()
+        if len(prev_all):
+            prev_all = prev_all[prev_all["marca"].isin(marcas_sel)]
+
+        def prev_hasta(canales_, marca_=None, hasta_h=None):
+            """(facturación, pedidos, unidades) del evento anterior hasta la misma hora del evento."""
+            if not len(prev_all):
+                return None
+            h_ = trans_h if hasta_h is None else hasta_h
+            d_ = prev_all[prev_all["canal"].isin(canales_) & (prev_all["hora_ev"] < h_)]
+            if marca_:
+                d_ = d_[d_["marca"] == marca_]
+            pdp = d_.drop_duplicates(["canal", "marca", "id_pedido"])
+            return float(pdp["total_pedido"].sum()), float(len(pdp)), float(pd.to_numeric(d_["cantidad"], errors="coerce").sum())
+
+        def _var(a_, b_):
+            if not b_:
+                return "—"
+            v_ = (a_ / b_ - 1) * 100
+            return f"<span style='color:{'#34D399' if v_ >= 0 else '#F87171'};font-weight:700'>{'+' if v_ >= 0 else ''}{fmt_dec(v_, 0)}%</span>"
+        prev_canales = set(prev_all["canal"]) if len(prev_all) else set()
 
         # ---------- cabecera ----------
         if ahora < ev_ini:
@@ -3399,6 +3447,10 @@ if tab_cyber is not None:
                       ("Última hora", fmt_compact(float(h1_["total_pedido"].sum())), f"{fmt_num(len(h1_))} pedidos"),
                       ("Ritmo vs normal", (fmt_dec(x_, 1) + "x") if x_ else "—", "promedio 28 días previos"),
                       ("Proyección", fmt_compact(pr_) if pr_ else "—", f"{fmt_compact(rit_)}/hora")]
+            pv_ = prev_hasta([c_]) if c_ in prev_canales else None
+            if pv_:
+                celdas.append((f"vs {prev_lbl.split(' (')[0]} (misma hora)", _var(f_, pv_[0]),
+                               f"pedidos {_var(n_, pv_[1])} · unidades {_var(u_, pv_[2])}"))
             cuerpo = "".join(f"<div style='flex:1 1 30%;min-width:120px;padding:10px 12px;background:rgba(148,163,184,.06);border-radius:12px'>"
                              f"<div style='font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:700'>{a}</div>"
                              f"<div style='font-size:22px;font-weight:800;color:#F8FAFC;margin:2px 0'>{b}</div>"
@@ -3526,7 +3578,7 @@ if tab_cyber is not None:
             st.caption("Avance en verde = va igual o mejor que el tiempo transcurrido · amarillo = hasta 20% por debajo · rojo = más atrasado.")
 
         # ---------- HORA A HORA ----------
-        seccion("Ritmo", "Venta hora a hora", "Barras = cada hora del evento. Línea = acumulado. Punteada = Hot Sale 2026 (solo Tienda Online) a la misma hora del evento.")
+        seccion("Ritmo", "Venta hora a hora", f"Barras = cada hora del evento. Línea = acumulado. Punteada = {prev_lbl or 'evento anterior'} a la misma hora desde su inicio (lunes 00:00).")
         met_cy = st.segmented_control("Métrica", ["Facturación", "Pedidos", "Unidades"], default="Facturación", key="cy_met") or "Facturación"
         fmt_cy = fmt_compact if met_cy == "Facturación" else fmt_num
         if len(PE):
@@ -3541,16 +3593,16 @@ if tab_cyber is not None:
                 fig.add_bar(x=ph.index, y=ph[c_], name=c_, marker_color=COLOR_CANAL[c_])
         if len(ph):
             fig.add_scatter(x=ph.index, y=ph.sum(axis=1).cumsum(), name="Acumulado", line=dict(color="#F8FAFC", width=3), secondary_y=True)
-        hs, hs_ini = hot_sale_ref() if canal_cy != "MercadoLibre" else (pd.DataFrame(), None)
+        hs = prev_all if canal_cy == "General" else (prev_all[prev_all["canal"] == canal_cy] if len(prev_all) else prev_all)
         if len(hs):
-            hs_m = hs[hs["marca"].isin(marcas_sel)]
+            hs_m = hs
             _hp = hs_m.drop_duplicates(["marca", "id_pedido"])
             hph = (_hp.groupby("hora_ev")["total_pedido"].sum() if met_cy == "Facturación" else
                    (_hp.groupby("hora_ev").size() if met_cy == "Pedidos" else
                     pd.to_numeric(hs_m["cantidad"], errors="coerce").groupby(hs_m["hora_ev"]).sum())).reindex(range(int(dur_h) + 1), fill_value=0)
             n_ = int(trans_h) + 1 if en_curso else len(hph)
             xs = [ev_ini + timedelta(hours=i) for i in range(len(hph))]
-            fig.add_scatter(x=xs[:max(n_, 1) + 6], y=hph.cumsum().values[:max(n_, 1) + 6], name=f"Hot Sale (desde {hs_ini:%d/%m}) acumulado",
+            fig.add_scatter(x=xs[:max(n_, 1) + 6], y=hph.cumsum().values[:max(n_, 1) + 6], name=f"{prev_lbl} acumulado (misma hora del evento)",
                             line=dict(color="#FBBF24", width=2, dash="dot"), secondary_y=True)
         fig.update_layout(barmode="stack", bargap=0.15, hovermode="x unified", legend_title_text="")
         _u = {"Facturación": "$", "Pedidos": "pedidos", "Unidades": "unidades"}[met_cy]
@@ -3561,24 +3613,29 @@ if tab_cyber is not None:
         fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), margin=dict(t=60))
         st.plotly_chart(fig, width="stretch")
         if len(hs) and en_curso:
-            hs_hasta = hph.cumsum().values[min(int(trans_h), len(hph) - 1)]
-            _pt = PE[PE["canal"] == "Tienda Online"]
-            tienda_now = float(_pt["total_pedido"].sum() if met_cy == "Facturación" else (len(_pt) if met_cy == "Pedidos" else _pt["unidades"].sum()))
-            if hs_hasta:
-                st.caption((f"Tienda Online va {fmt_cy(tienda_now)} {'' if met_cy == 'Facturación' else met_cy.lower()} contra {fmt_cy(hs_hasta)} del Hot Sale a la misma hora "
-                            f"(**{fmt_dec((tienda_now / hs_hasta - 1) * 100, 0)}%**).").replace("$", "\\$"))
+            can_cmp = [c_ for c_ in (CANALES if canal_cy == "General" else [canal_cy]) if c_ in prev_canales]
+            pv_ = prev_hasta(can_cmp)
+            _pt = PE[PE["canal"].isin(can_cmp)]
+            cur_ = (float(_pt["total_pedido"].sum()), float(len(_pt)), float(_pt["unidades"].sum()))
+            if pv_ and any(pv_):
+                st.markdown(f"<div style='font-size:14px;color:#CBD5E1'>📊 <b>{' + '.join(CORTO.get(c_, c_) for c_ in can_cmp)}</b> vs <b>{prev_lbl}</b> "
+                            f"a la misma hora del evento: facturación {_var(cur_[0], pv_[0])} ({fmt_compact(cur_[0])} vs {fmt_compact(pv_[0])}) · "
+                            f"pedidos {_var(cur_[1], pv_[1])} ({fmt_num(cur_[1])} vs {fmt_num(pv_[1])}) · "
+                            f"unidades {_var(cur_[2], pv_[2])} ({fmt_num(cur_[2])} vs {fmt_num(pv_[2])})</div>", unsafe_allow_html=True)
+                if prev_lbl.startswith("Cyber"):
+                    st.caption("La facturación está en pesos corrientes (sin ajustar por inflación): para comparar volumen real mirá pedidos y unidades.")
 
         # ---------- MARCAS ----------
         seccion("Marcas", "¿Cómo va cada marca?", "Facturación del evento por marca y canal, contra un día normal (promedio de los 28 días previos).")
         ref_m = Pref.groupby(Pref["marca"].astype(str))["total_pedido"].sum() / 28 if len(Pref) else pd.Series(dtype=float)
-        hs_m_tot = (hs[hs["marca"].isin(marcas_sel)].drop_duplicates(["marca", "id_pedido"]).groupby("marca")["total_pedido"].sum()
-                    if len(hs) else pd.Series(dtype=float))
+        can_m = [c_ for c_ in (CANALES if canal_cy == "General" else [canal_cy]) if c_ in prev_canales]
         cols_m = st.columns(max(1, len(marcas_sel)))
         for col, m_ in zip(cols_m, marcas_sel):
             d_ = PE[PE["marca"] == m_]
             f_ = float(d_["total_pedido"].sum())
             x_ = f_ / (ref_m.get(m_, 0) * max(trans_h / 24, 1 / 24)) if ref_m.get(m_, 0) and trans_h > 0 else None
-            hs_txt = (f"<span>Hot Sale total {fmt_compact(hs_m_tot.get(m_, 0))}</span>" if m_ in hs_m_tot.index else "")
+            pvm = prev_hasta(can_m, m_) if can_m else None
+            hs_txt = (f"<span>vs {prev_lbl.split(' (')[0]}: $ {_var(f_, pvm[0])} · u. {_var(float(d_['unidades'].sum()), pvm[2])}</span>" if pvm and pvm[0] else "")
             col.markdown(kpi_card(m_, fmt_compact(f_), (f"<span class='delta up'>{fmt_dec(x_, 1)}x ritmo normal</span>" if x_ else ""),
                                   split_html(por_canal_vals(d_, "total_pedido")) +
                                   f"<div class='split-legend' style='margin-top:6px'><span>{fmt_num(len(d_))} pedidos</span><span>{fmt_num(d_['unidades'].sum())} u.</span></div>"
