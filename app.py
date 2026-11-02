@@ -3320,7 +3320,7 @@ CYBER_PREV_INI = datetime(2025, 11, 3, 0, 0, tzinfo=ZONA_AR)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cyber_prev_ref():
-    """Cyber Monday 2025 (3/11 al 9/11/2025) desde cyber_2025.csv. Si no está, se usa el Hot Sale 2026 (solo Tienda)."""
+    """Cyber Monday 2025 (3/11 al 9/11/2025) desde cyber_2025.csv (archivo liviano). Si todavía no existe, no hay comparativa."""
     try:
         c = leer_csv_repo("cyber_2025.csv")
     except Exception:
@@ -3333,39 +3333,7 @@ def cyber_prev_ref():
         c["canal"] = c["canal"].astype(str)
         c["marca"] = c["marca"].astype(str)
         return c, "Cyber Monday 2025", CYBER_PREV_INI.date()
-    hs, ini = hot_sale_ref()
-    if len(hs):
-        hs = hs.copy()
-        hs["canal"] = "Tienda Online"
-        hs["marca"] = hs["marca"].astype(str)
-        return hs, "Hot Sale 2026 (solo Tienda)", ini
     return pd.DataFrame(), "", None
-
-
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
-def hot_sale_ref():
-    """Hot Sale 2026 (Tienda Online) desde el histórico: los 3 días seguidos de mayo-junio con más venta."""
-    try:
-        h = leer_csv_repo("ventas_historico.csv")
-    except Exception:
-        return pd.DataFrame(), None
-    if h.empty:
-        return pd.DataFrame(), None
-    h = h[pd.to_numeric(h["es_reverso"], errors="coerce").fillna(0) == 0].copy()
-    h["fecha"] = pd.to_datetime(h["fecha"], errors="coerce", format="mixed", utc=True).dt.tz_convert(ZONA_AR)
-    h = h.dropna(subset=["fecha"])
-    h = h[(h["fecha"].dt.month.isin([5, 6]))]
-    if h.empty:
-        return pd.DataFrame(), None
-    ped = h.drop_duplicates(["marca", "id_pedido"])
-    dia = ped.groupby(ped["fecha"].dt.date)["total_pedido"].sum().sort_index()
-    dia = dia.reindex(pd.date_range(dia.index.min(), dia.index.max()).date, fill_value=0)
-    roll = dia.rolling(3).sum()
-    fin = roll.idxmax()
-    ini = fin - timedelta(days=2)
-    hs = h[(h["fecha"].dt.date >= ini) & (h["fecha"].dt.date <= fin)].copy()
-    hs["hora_ev"] = ((hs["fecha"] - datetime.combine(ini, datetime.min.time(), tzinfo=ZONA_AR)).dt.total_seconds() // 3600).astype(int)
-    return hs, ini
 
 
 if tab_cyber is not None:
