@@ -16,7 +16,6 @@ import requests
 from collections import Counter
 from itertools import combinations
 from datetime import datetime, timedelta, timezone
-from streamlit_autorefresh import st_autorefresh
 
 # ==============================================================================
 # 1. CONFIGURACIÓN
@@ -711,7 +710,15 @@ if "auth" not in st.session_state:
 
 AUTH = st.session_state["auth"]
 ES_ADMIN = AUTH["rol"] == "admin"
-st_autorefresh(interval=300000, limit=None, key="auto_refresh")
+# Actualización automática cada 5 minutos (nativo de Streamlit, sin componentes externos)
+@st.fragment(run_every=300)
+def _auto_refresh():
+    if time.time() - st.session_state.get("_ult_run_app", 0) > 290:
+        st.rerun()
+
+
+st.session_state["_ult_run_app"] = time.time()
+_auto_refresh()
 
 
 # ==============================================================================
