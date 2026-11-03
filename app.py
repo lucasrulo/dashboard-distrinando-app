@@ -406,7 +406,7 @@ def norm_cuotas(v):
     return "1 pago"
 
 
-@st.cache_data(ttl=300, max_entries=1, show_spinner="Cargando ventas…")
+@st.cache_resource(ttl=300, max_entries=1, show_spinner="Cargando ventas…")  # una sola copia compartida (no se duplica por usuario)
 def load_data():
     partes = []
     for nombre, canal in [("ventas_hot_sale.csv", "Tienda Online"), ("ventas_meli.csv", "MercadoLibre")]:
@@ -489,6 +489,8 @@ def load_data():
     for c in ["marca", "canal", "medio_pago", "medio_grupo", "cuotas", "cuotas_grupo", "descuento", "provincia", "estado",
               "envio_estado", "transportista"]:
         df[c] = df[c].astype("category")
+    # Columnas que el dashboard no usa: se descartan para ahorrar memoria
+    df = df.drop(columns=[c for c in ["ultima_actualizacion", "logistica", "estado_orden", "shipping_id", "tags", "fulfillment_status"] if c in df.columns])
     return df
 
 
@@ -779,6 +781,7 @@ with st.sidebar:
                                 json={"ref": "main"}, timeout=20)
             if res.status_code == 204:
                 st.cache_data.clear()
+                st.cache_resource.clear()
                 st.toast("Extracción lanzada. Los datos nuevos aparecen en ~2 minutos.", icon="⏳")
             else:
                 st.error(f"Error GitHub ({res.status_code})")
@@ -813,7 +816,7 @@ _tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast
          ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/campaign: Publicidad MeLi",
          ":material/group: Clientes"]
 # Post-venta MeLi (devoluciones, reclamos, cancelaciones): solo estos usuarios
-VER_POSTVENTA = {"afredes", "lruiz"}
+VER_POSTVENTA = {"afredes", "lruiz", "maguirre"}
 VE_PV = str(AUTH.get("usuario", "")).lower() in VER_POSTVENTA
 VE_CYBER = VE_PV   # Cyber Monday: mismos usuarios (lruiz y afredes)
 if VE_CYBER:
@@ -822,7 +825,17 @@ if VE_PV:
     _tabs.append(":material/assignment_return: Post-venta MeLi")
 if ES_ADMIN:  # Operaciones (logística) solo para super admins
     _tabs.append(":material/local_shipping: Operaciones")
-_t = st.tabs(_tabs)
+objetivos, origen_obj = load_objetivos()
+_t = st.tabs(_tabs, key="tab_principal", on_change="rerun")
+
+
+def _abrir(t):
+    """Solo ejecuta la pestaña que está abierta (las demás no se calculan): baja mucho el uso de memoria."""
+    if t is not None and t.open:
+        with t:
+            yield
+
+
 _o = 1 if VE_CYBER else 0
 tab_cyber = _t[0] if VE_CYBER else None
 tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_ads, tab_cli = _t[_o:_o + 7]
@@ -840,7 +853,7 @@ def dias_habiles(desde, hasta):
     return np.maximum(np.busday_count(a, b), 0)
 
 
-with tab_res:
+for _ in _abrir(tab_res):
     # ---------- QUÉ ATENDER HOY ----------
     alertas = []
     try:
@@ -1067,8 +1080,7 @@ with tab_res:
 # ==============================================================================
 # TAB 2 · METAS & FORECAST
 # ==============================================================================
-with tab_metas:
-    objetivos, origen_obj = load_objetivos()
+for _ in _abrir(tab_metas):
 
     seccion("Objetivos", "Cumplimiento de metas · Real vs. Objetivo",
             f"Venta neta del período ({rango_txt}) contra la meta. La línea blanca marca el objetivo.")
@@ -1218,7 +1230,7 @@ with tab_metas:
 # ==============================================================================
 # TAB 3 · PRODUCTOS
 # ==============================================================================
-with tab_prod:
+for _ in _abrir(tab_prod):
     seccion("Ranking", "TOP 10 productos", "El mismo artículo suma Tienda Online + MercadoLibre (agrupa por código).")
     p1c, p2c = st.columns([1.4, 1])
     with p1c:
@@ -1295,7 +1307,7 @@ with tab_prod:
 # ==============================================================================
 # TAB · STOCK & PUBLICACIONES
 # ==============================================================================
-with tab_stock:
+for _ in _abrir(tab_stock):
     cat = load_aux("catalogo_stock.csv")
     pub = load_aux("meli_publicaciones.csv")
 
@@ -1488,7 +1500,7 @@ with tab_stock:
 # ==============================================================================
 # TAB 4 · COMERCIAL
 # ==============================================================================
-with tab_com:
+for _ in _abrir(tab_com):
     sel_c = selector_canal("com_canal")
     dcom = por_canal(df_f, sel_c)
     Pc = por_canal(P, sel_c)
@@ -1693,7 +1705,7 @@ def _ads_kpis(d):
     return t
 
 
-with tab_ads:
+for _ in _abrir(tab_ads):
     a_camp = load_aux("meli_ads_campanias.csv")
     # Campañas reales (las que el anunciante creó). Los anuncios "idle" quedan en una campaña técnica de MeLi = sin campaña.
     camp_reales = set(a_camp["campaign_id"]) if not a_camp.empty else set()
@@ -2433,7 +2445,7 @@ with tab_ads:
 # ==============================================================================
 # TAB · CLIENTES
 # ==============================================================================
-with tab_cli:
+for _ in _abrir(tab_cli):
     res_c = load_aux("clientes_resumen.csv")
     coh_c = load_aux("clientes_cohortes.csv")
     sel_cl = selector_canal("cli_canal")
@@ -2652,7 +2664,7 @@ def _pv_clasificar(r):
 
 
 if tab_pv is not None:
-    with tab_pv:
+    for _ in _abrir(tab_pv):
         pv_c = load_aux("meli_cancelaciones.csv")
         pv_r = load_aux("meli_reclamos.csv")
         if pv_c.empty and pv_r.empty:
@@ -3145,7 +3157,7 @@ if tab_pv is not None:
 # TAB 5 · OPERACIONES
 # ==============================================================================
 if tab_ops is not None:
-    with tab_ops:
+    for _ in _abrir(tab_ops):
         sel_o = selector_canal("ops_canal")
         Po = por_canal(P, sel_o)
         if Po.empty:
@@ -3461,7 +3473,7 @@ def cyber_prev_ref():
 
 
 if tab_cyber is not None:
-    with tab_cyber:
+    for _ in _abrir(tab_cyber):
         ev_ini, ev_fin = CYBER_INI_DEF, CYBER_FIN_DEF
         if ES_ADMIN:
             with st.expander("⚙️ Fechas del evento", expanded=False):
