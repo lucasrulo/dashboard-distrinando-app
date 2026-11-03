@@ -573,6 +573,8 @@ def normalizar_obj(o):
         det = o["cyber"].get("detalle") or {}
         out["cyber"] = {"facturacion": int(o["cyber"].get("facturacion", 0) or 0),
                         "detalle": {c: {m: int(v or 0) for m, v in (det.get(c) or {}).items()} for c in CANALES}}
+    if isinstance(o.get("gads_presupuesto"), dict):   # presupuesto mensual de Google Ads por marca: {"2026-11": {"Reebok": 3000000}}
+        out["gads_presupuesto"] = {mes: {m: int(v or 0) for m, v in (d or {}).items()} for mes, d in o["gads_presupuesto"].items()}
     return out
 
 
@@ -893,13 +895,47 @@ for _ in _abrir(tab_res):
             alertas.append(("Despachos demorados", _n, "sin salir hace 3 a 20 días hábiles", "Operaciones", "#EF4444"))
     except Exception:
         alertas = []
+    if VE_GADS:   # alertas de Google Ads
+        try:
+            _gd = load_aux("gads_campanias_diario.csv")
+            _gp = load_aux("gads_productos.csv")
+            if not _gp.empty and "inversion_7d" in _gp.columns:
+                _s = _gp[_gp["marca"].isin(marcas_sel) & (pd.to_numeric(_gp["stock"], errors="coerce") <= 0) & (pd.to_numeric(_gp["inversion_7d"], errors="coerce") > 0)]
+                alertas.append(("Google: sin stock", len(_s), f"productos con inversión · {fmt_compact(pd.to_numeric(_s['inversion_7d']).sum())} en 7 días", "Google Ads", "#F472B6"))
+            if not _gd.empty:
+                _gd = _gd[_gd["marca"].isin(marcas_sel)].copy()
+                _gd["dia"] = pd.to_datetime(_gd["fecha"]).dt.date
+                for c_ in ["inversion", "valor_conv", "is_perdida_presupuesto"]:
+                    _gd[c_] = pd.to_numeric(_gd[c_], errors="coerce")
+                _w1 = _gd[(_gd["dia"] < hoy) & (_gd["dia"] >= hoy - timedelta(days=7))]
+                _w0 = _gd[(_gd["dia"] < hoy - timedelta(days=7)) & (_gd["dia"] >= hoy - timedelta(days=14))]
+                a1 = _w1.groupby("campaign_id").agg(inv=("inversion", "sum"), val=("valor_conv", "sum"), lb=("is_perdida_presupuesto", "mean"), est=("estado", "last"))
+                a0 = _w0.groupby("campaign_id").agg(inv0=("inversion", "sum"), val0=("valor_conv", "sum"))
+                a1 = a1.join(a0, how="left")
+                a1["roas"] = a1["val"] / a1["inv"].where(a1["inv"] > 0)
+                a1["roas0"] = a1["val0"] / a1["inv0"].where(a1["inv0"] > 0)
+                roas_cta = a1["val"].sum() / a1["inv"].sum() if a1["inv"].sum() else 0
+                _lim = a1[(a1["est"] == "ENABLED") & (a1["lb"] >= 15) & (a1["roas"] >= roas_cta)]
+                alertas.append(("Google: sin presupuesto", len(_lim), "campañas con buen ROAS que pierden impresiones", "Google Ads", "#FBBF24"))
+                _min = a1["inv"].sum() * 0.02
+                _caida = a1[(a1["inv"] >= _min) & (a1["roas0"] > 0) & (a1["roas"] < a1["roas0"] * 0.7)]
+                alertas.append(("Google: ROAS en caída", len(_caida), "campañas con ROAS -30% vs semana anterior", "Google Ads", "#F87171"))
+                _hoy = _gd[_gd["dia"] == hoy].groupby("campaign_id")["inversion"].sum()
+                _prom = _w1.groupby("campaign_id")["inversion"].sum() / 7
+                _j = pd.concat([_hoy.rename("h"), _prom.rename("p")], axis=1).fillna(0)
+                _ano = _j[(_j["p"] > 0) & (_j["h"] > _j["p"] * 1.5)]
+                alertas.append(("Google: gasto inusual hoy", len(_ano), "campañas que ya gastaron +50% de su promedio diario", "Google Ads", "#EF4444"))
+        except Exception:
+            pass
     if alertas:
-        seccion("Prioridades", "Qué atender hoy", "Alertas cruzadas de stock, publicidad, catálogo y logística. El detalle está en cada pestaña.")
-        ca = st.columns(len(alertas))
-        for col, (tit, n, txt, tab_, colr) in zip(ca, alertas):
-            est_ = "<span class='delta up'>✓ todo en orden</span>" if n == 0 else f"<span class='delta down'>{txt}</span>"
-            col.markdown(kpi_card(tit, fmt_num(n), est_, f"<div class='split-legend' style='margin-top:10px'><span>→ {tab_}</span></div>",
-                                  "#34D399" if n == 0 else colr, sm=True), unsafe_allow_html=True)
+        seccion("Prioridades", "Qué atender hoy", "Alertas cruzadas de stock, publicidad (MeLi y Google), catálogo y logística. El detalle está en cada pestaña.")
+        for _i0 in range(0, len(alertas), 5):
+            ca = st.columns(5)
+            for col, (tit, n, txt, tab_, colr) in zip(ca, alertas[_i0:_i0 + 5]):
+                est_ = "<span class='delta up'>✓ todo en orden</span>" if n == 0 else f"<span class='delta down'>{txt}</span>"
+                col.markdown(kpi_card(tit, fmt_num(n), est_, f"<div class='split-legend' style='margin-top:10px'><span>→ {tab_}</span></div>",
+                                      "#34D399" if n == 0 else colr, sm=True), unsafe_allow_html=True)
+            st.write("")
 
     # ---------- HOY ----------
     P_hoy_all = a_pedidos(base_m[base_m["dia"] == hoy])
@@ -1123,12 +1159,11 @@ for _ in _abrir(tab_metas):
                 "Unidades": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
                 "Facturación ($)": st.column_config.NumberColumn(min_value=0, step=100000, format="$%d")})
             if st.button("Guardar metas", type="primary", icon=":material/save:"):
-                nuevo = {c: {} for c in CANALES}
+                nuevo = {k_: v_ for k_, v_ in objetivos.items() if k_ not in CANALES}   # conserva Cyber y presupuestos de Google
+                nuevo.update({c: {} for c in CANALES})
                 for _, row in ed_out.iterrows():
                     nuevo[row["Canal"]][row["Marca"]] = {"unidades": int(row["Unidades"] or 0),
                                                          "facturacion": int(row["Facturación ($)"] or 0)}
-                if isinstance(objetivos.get("cyber"), dict):
-                    nuevo["cyber"] = objetivos["cyber"]
                 ok, msg = guardar_objetivos(nuevo)
                 if ok:
                     load_objetivos.clear()
@@ -1781,8 +1816,11 @@ for _ in _abrir(tab_ads):
             if modo30:
                 html("<div class='hero-sub' style='margin-top:30px'>Período fijo: últimos 30 días (sin detalle diario).</div>")
             else:
-                per_ads = st.segmented_control("Período de la publicidad", ["Último día", "7D", "14D", "30D", "60D", "90D", "Rango"], default="30D", key="ads_periodo") or "30D"
-                if per_ads == "Rango":
+                per_ads = st.segmented_control("Período de la publicidad", ["Último día", "7D", "14D", "30D", "60D", "90D", "Día", "Rango"], default="30D", key="ads_periodo") or "30D"
+                if per_ads == "Día":
+                    _dd = st.date_input("Elegí el día", value=f_ads_max, min_value=f_ads_min, max_value=f_ads_max, key="ads_dia", format="DD/MM/YYYY")
+                    a0 = a1 = _dd
+                elif per_ads == "Rango":
                     rg = st.date_input("Desde / hasta", value=(max(f_ads_min, f_ads_max - timedelta(days=29)), f_ads_max),
                                        min_value=f_ads_min, max_value=f_ads_max, key="ads_rango", format="DD/MM/YYYY")
                     if isinstance(rg, (list, tuple)) and len(rg) == 2:
@@ -3882,6 +3920,29 @@ def _gk(d):
     return t
 
 
+GADS_PALABRAS_MARCA = {"Reebok": ["reebok", "rebook", "reebook"], "Columbia": ["columbia", "colombia sportswear"], "Crocs": ["crocs", "croc ", "crox"],
+                       "Kappa": ["kappa", "kapa "], "Piccadilly": ["piccadilly", "picadilly", "pikadilly", "piccadili"]}
+
+
+def _idstr(s):
+    """IDs numéricos como texto estable (evita 1.23e10 / '123.0')."""
+    return pd.to_numeric(s, errors="coerce").astype("Int64").astype(str).replace("<NA>", "")
+
+
+def gads_segmento(tipo, nombre):
+    n = str(nombre).upper().replace("_", "-")
+    if str(tipo) == "SEARCH":
+        if any(x in n for x in ("NOBRAND", "NO-BRAND", "NO BRAND", "NONBRAND", "NON-BRAND", "GENERIC", "GENERICA", "GENÉRICA")):
+            return "Búsqueda · No marca"
+        return "Búsqueda · Marca" if "BRAND" in n or "MARCA" in n else "Búsqueda · No marca"
+    return GADS_TIPOS.get(str(tipo), str(tipo).title())
+
+
+def es_busqueda_de_marca(termino):
+    t = f" {str(termino).lower()} "
+    return any(p in t for ps in GADS_PALABRAS_MARCA.values() for p in ps)
+
+
 for _ in _abrir(tab_gads):
     g_dia = load_aux("gads_campanias_diario.csv")
     if g_dia.empty:
@@ -3890,6 +3951,7 @@ for _ in _abrir(tab_gads):
         g_dia = g_dia.copy()
         g_dia["dia"] = pd.to_datetime(g_dia["fecha"]).dt.date
         g_dia["tipo_txt"] = g_dia["tipo"].map(GADS_TIPOS).fillna(g_dia["tipo"].astype(str).str.title())
+        g_dia["segmento"] = [gads_segmento(t_, n_) for t_, n_ in zip(g_dia["tipo"], g_dia["campania"])]
         for c_ in ["inversion", "valor_conv", "conversiones", "clics", "impresiones", "presupuesto_diario"]:
             g_dia[c_] = pd.to_numeric(g_dia[c_], errors="coerce").fillna(0)
         _act = pd.to_datetime(g_dia["actualizado"].iloc[0], errors="coerce")
@@ -3902,8 +3964,21 @@ for _ in _abrir(tab_gads):
             _td = [t for t in GADS_COLOR_TIPO if t in set(g_dia["tipo_txt"])] + sorted(set(g_dia["tipo_txt"]) - set(GADS_COLOR_TIPO))
             g_tipos = st.pills("Tipo de campaña", _td, selection_mode="multi", default=_td, key="gads_tipos") or _td
         with f2:
-            g_per = st.segmented_control("Período", ["Hoy", "Ayer", "7D", "14D", "30D", "90D"], default="7D", key="gads_per") or "7D"
-        if g_per == "Hoy":
+            g_per = st.segmented_control("Período", ["Hoy", "Ayer", "7D", "14D", "30D", "90D", "Día", "Rango"], default="7D", key="gads_per") or "7D"
+            g_min = g_dia["dia"].min()
+            if g_per == "Día":
+                _d = st.date_input("Elegí el día", value=min(hoy, g_max), min_value=g_min, max_value=max(hoy, g_max), key="gads_dia", format="DD/MM/YYYY")
+            elif g_per == "Rango":
+                _rg = st.date_input("Desde / hasta", value=(max(g_min, hoy - timedelta(days=6)), hoy), min_value=g_min, max_value=max(hoy, g_max),
+                                    key="gads_rango", format="DD/MM/YYYY")
+        if g_per == "Día":
+            g0 = g1 = _d
+        elif g_per == "Rango":
+            if isinstance(_rg, (list, tuple)) and len(_rg) == 2:
+                g0, g1 = _rg
+            else:
+                g0 = g1 = (_rg[0] if isinstance(_rg, (list, tuple)) and _rg else _rg)
+        elif g_per == "Hoy":
             g0 = g1 = hoy
         elif g_per == "Ayer":
             g0 = g1 = hoy - timedelta(days=1)
@@ -3912,7 +3987,7 @@ for _ in _abrir(tab_gads):
             g0 = hoy - timedelta(days=int(g_per[:-1]) - 1)
         gnd = (g1 - g0).days + 1
         gp0, gp1 = g0 - timedelta(days=gnd), g0 - timedelta(days=1)
-        _cap = "vs ayer (día completo)" if g_per == "Hoy" else "vs período anterior"
+        _cap = "vs ayer (día completo)" if g_per == "Hoy" else ("vs día anterior" if gnd == 1 else "vs período anterior")
         html(f"<div class='hero-sub'>📅 <b>{g0:%d/%m/%Y} → {g1:%d/%m/%Y}</b> · comparado con {gp0:%d/%m} → {gp1:%d/%m} · "
              f"Google informa la inversión casi en vivo (actualizado {(_act.strftime('%d/%m %H:%M') + ' hs') if pd.notna(_act) else '—'}). "
              "Las ventas atribuidas del día pueden seguir sumándose por unas horas.</div>")
@@ -3966,6 +4041,149 @@ for _ in _abrir(tab_gads):
         st.caption("ROAS Google = lo que Google dice que vendió. 'Venta tienda por $1 invertido' = venta real total de la Tienda Online / inversión en Google: "
                    "es el número más honesto para saber si la inversión paga (incluye venta que no vino por Google).")
 
+        # ---------- Presupuesto del mes ----------
+        import calendar
+        _mes = hoy.strftime("%Y-%m")
+        _ini_mes = hoy.replace(day=1)
+        _dias_mes = calendar.monthrange(hoy.year, hoy.month)[1]
+        _transc = max((hoy.day - 1) + (ahora.hour + ahora.minute / 60) / 24, 0.05)
+        _rest = max(_dias_mes - _transc, 0.0)
+        _pres = (objetivos.get("gads_presupuesto") or {}).get(_mes, {})
+        _MES_TXT = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"][hoy.month - 1]
+        seccion("Presupuesto", f"Ritmo del presupuesto · {_MES_TXT} {hoy.year}",
+                f"Gastado en el mes vs. presupuesto mensual por marca. Proyección = ritmo de gasto del mes llevado a los {_dias_mes} días.")
+        _gm = g_dia[g_dia["marca"].isin(g_marcas) & (g_dia["dia"] >= _ini_mes)]
+        _ult = g_dia[g_dia["dia"] == g_max]
+        filas_p = []
+        for m in g_marcas:
+            gasto = float(_gm.loc[_gm["marca"] == m, "inversion"].sum())
+            pres = float(_pres.get(m, 0) or 0)
+            proy = gasto / _transc * _dias_mes
+            r7 = g_dia[(g_dia["marca"] == m) & (g_dia["dia"] < hoy) & (g_dia["dia"] >= hoy - timedelta(days=7))]["inversion"].sum() / 7
+            pdia = float(_ult[(_ult["marca"] == m) & (_ult["estado"] == "ENABLED")].drop_duplicates("campaign_id")["presupuesto_diario"].sum())
+            nec = (pres - gasto) / _rest if (pres and _rest > 0) else None
+            if not pres:
+                est = "⚪ Sin presupuesto cargado"
+            elif proy > pres * 1.1:
+                est = f"🔴 Se pasa {fmt_compact(proy - pres)}"
+            elif proy < pres * 0.9:
+                est = f"🟡 Queda corto {fmt_compact(pres - proy)}"
+            else:
+                est = "🟢 En línea"
+            filas_p.append({"Marca": m, "Estado": est, "Presupuesto del mes": pres or None, "Gastado": gasto,
+                            "% gastado": gasto / pres * 100 if pres else None, "Proyección fin de mes": proy,
+                            "% proyectado": proy / pres * 100 if pres else None, "Gasto diario actual (7d)": r7,
+                            "Gasto diario necesario": nec, "Presupuestos diarios activos": pdia})
+        tp_ = pd.DataFrame(filas_p)
+        for c_ in tp_.columns[2:]:
+            tp_[c_] = pd.to_numeric(tp_[c_], errors="coerce")
+        if len(tp_):
+            tot_g, tot_p, tot_pr = tp_["Gastado"].sum(), tp_["Presupuesto del mes"].fillna(0).sum(), tp_["Proyección fin de mes"].sum()
+            cc = st.columns(4)
+            cc[0].markdown(kpi_card("Gastado en el mes", fmt_kpi(tot_g), "", f"<div class='split-legend' style='margin-top:10px'><span>día {hoy.day} de {_dias_mes}</span></div>", "#F472B6", sm=True), unsafe_allow_html=True)
+            cc[1].markdown(kpi_card("Presupuesto del mes", fmt_kpi(tot_p) if tot_p else "—", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(tot_g / tot_p * 100, 0) + '% usado' if tot_p else 'cargalo abajo'}</span></div>", "#A78BFA", sm=True), unsafe_allow_html=True)
+            cc[2].markdown(kpi_card("Proyección a fin de mes", fmt_kpi(tot_pr), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_dec(tot_pr / tot_p * 100, 0) + '% del presupuesto' if tot_p else ''}</span></div>",
+                                    "#F87171" if tot_p and tot_pr > tot_p * 1.1 else ("#FBBF24" if tot_p and tot_pr < tot_p * 0.9 else "#34D399"), sm=True), unsafe_allow_html=True)
+            _nec_t = (tot_p - tot_g) / _rest if (tot_p and _rest > 0) else 0
+            cc[3].markdown(kpi_card("Gasto diario para cerrar justo", fmt_ars(max(_nec_t, 0)) if tot_p else "—", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>hoy se gasta ~{fmt_compact(tp_['Gasto diario actual (7d)'].sum())}/día</span></div>", "#22D3EE", sm=True), unsafe_allow_html=True)
+            if tot_p:
+                fig = go.Figure()
+                fig.add_bar(y=tp_["Marca"], x=tp_["Gastado"], orientation="h", name="Gastado", marker_color="#F472B6",
+                            hovertemplate="%{y}<br>Gastado $ %{x:,.0f}<extra></extra>")
+                fig.add_bar(y=tp_["Marca"], x=(tp_["Proyección fin de mes"] - tp_["Gastado"]).clip(lower=0), orientation="h", name="Proyección restante",
+                            marker_color="rgba(244,114,182,0.30)", hovertemplate="%{y}<br>Proyección total $ %{customdata:,.0f}<extra></extra>",
+                            customdata=tp_["Proyección fin de mes"])
+                fig.add_scatter(y=tp_["Marca"], x=tp_["Presupuesto del mes"], mode="markers", name="Presupuesto",
+                                marker=dict(symbol="line-ns", size=26, line=dict(width=4, color="#FFE600")),
+                                hovertemplate="%{y}<br>Presupuesto $ %{x:,.0f}<extra></extra>")
+                fig.update_layout(barmode="stack", legend=dict(orientation="h", y=1.15), xaxis=dict(title=""), yaxis=dict(title=""))
+                st.plotly_chart(estilo(fig, 60 + 48 * len(tp_)), width="stretch")
+            st.dataframe(tp_, hide_index=True, width="stretch",
+                         column_config={c_: st.column_config.NumberColumn(format="$ %,.0f") for c_ in
+                                        ["Presupuesto del mes", "Gastado", "Proyección fin de mes", "Gasto diario actual (7d)", "Gasto diario necesario", "Presupuestos diarios activos"]}
+                         | {"% gastado": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
+                            "% proyectado": st.column_config.NumberColumn(format="%.0f%%")})
+        with st.expander("✏️ Cargar / editar presupuesto mensual de Google Ads", expanded=not _pres):
+            _ed = pd.DataFrame({"Marca": g_marcas, "Presupuesto mensual ($)": [int(_pres.get(m, 0) or 0) for m in g_marcas]})
+            _ed_out = st.data_editor(_ed, hide_index=True, width="stretch", key="gads_pres_ed",
+                                     column_config={"Marca": st.column_config.TextColumn(disabled=True),
+                                                    "Presupuesto mensual ($)": st.column_config.NumberColumn(min_value=0, step=100000, format="localized")})
+            if st.button("Guardar presupuesto", key="gads_pres_btn", type="primary", icon=":material/save:"):
+                o2 = dict(objetivos)
+                gp_ = dict(o2.get("gads_presupuesto") or {})
+                mes_d = dict(gp_.get(_mes) or {})
+                mes_d.update({r_["Marca"]: int(r_["Presupuesto mensual ($)"] or 0) for _, r_ in _ed_out.iterrows()})
+                gp_[_mes] = mes_d
+                o2["gads_presupuesto"] = gp_
+                ok_, msg_ = guardar_objetivos(o2)
+                if ok_:
+                    load_objetivos.clear()
+                    st.toast("Presupuesto guardado", icon="✅")
+                    st.rerun()
+                else:
+                    st.error(msg_)
+
+        # ---------- Venta real de Google según Shopify ----------
+        seccion("Atribución real", "¿Cuánto vende Google de verdad? (según Shopify)",
+                "Cada pedido de la Tienda Online trae de dónde llegó el cliente (último clic). 'Google Ads' = llegó por un anuncio "
+                "(gclid / gad_campaignid / UTM pagas). Es una vista conservadora: Google además cuenta ventas de otros dispositivos y por haber visto el anuncio.")
+        g_ori = load_aux("shopify_origen.csv")
+        _bt = base_net[(base_net["canal"] == "Tienda Online") & base_net["marca"].astype(str).isin(g_marcas) & (base_net["dia"] >= g0) & (base_net["dia"] <= g1)]
+        _pt = a_pedidos(_bt)
+        g_real_camp = pd.DataFrame(columns=["_cid", "venta_real", "pedidos_real"])
+        g_real_marca = {}
+        if g_ori.empty:
+            st.info("Todavía no está el archivo de origen de pedidos (shopify_origen.csv). Se genera con el workflow 'Google Ads'.")
+        elif len(_pt):
+            _o = g_ori.assign(marca=g_ori["marca"].astype(str), _id=_idstr(g_ori["id_pedido"]),
+                              _cid=_idstr(g_ori["gad_campaignid"]) if "gad_campaignid" in g_ori.columns else "")[["marca", "_id", "origen", "_cid"]]
+            _o = _o.drop_duplicates(["marca", "_id"])
+            _pt = _pt.assign(marca=_pt["marca"].astype(str), _id=_idstr(_pt["id_pedido"])).merge(_o, on=["marca", "_id"], how="left")
+            cobertura = _pt["origen"].notna().mean() * 100
+            _pt["origen"] = _pt["origen"].fillna("Sin dato")
+            ga = _pt[_pt["origen"] == "Google Ads"]
+            v_ga, n_ga = float(ga["total_pedido"].sum()), len(ga)
+            roas_real = v_ga / K["inversion"] if K["inversion"] else 0
+            g_real_marca = ga.groupby("marca")["total_pedido"].agg(["sum", "count"]).to_dict("index")
+            g_real_camp = ga[ga["_cid"].astype(str) != ""].groupby("_cid")["total_pedido"].agg(venta_real="sum", pedidos_real="count").reset_index()
+            cc = st.columns(4)
+            cc[0].markdown(kpi_card("Venta confirmada por Google Ads", fmt_kpi(v_ga), "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>{fmt_num(n_ga)} pedidos · {fmt_dec(v_ga / vt * 100 if vt else 0, 0)}% de la tienda</span></div>", "#34D399", sm=True), unsafe_allow_html=True)
+            cc[1].markdown(kpi_card("ROAS real (Shopify)", f"{fmt_dec(roas_real, 1)}x", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>vs {fmt_dec(K['roas'], 1)}x que informa Google</span></div>", "#22D3EE", sm=True), unsafe_allow_html=True)
+            cc[2].markdown(kpi_card("Google se atribuye", f"{fmt_dec(K['valor_conv'] / v_ga, 1)}x" if v_ga else "—", "",
+                                    "<div class='split-legend' style='margin-top:10px'><span>veces lo que confirma Shopify</span></div>", "#FBBF24", sm=True), unsafe_allow_html=True)
+            cc[3].markdown(kpi_card("Costo por pedido real", fmt_ars(K["inversion"] / n_ga) if n_ga else "—", "",
+                                    f"<div class='split-legend' style='margin-top:10px'><span>inversión / pedidos con clic en Google Ads</span></div>", "#F472B6", sm=True), unsafe_allow_html=True)
+            o1, o2_ = st.columns([1, 1.5])
+            with o1:
+                mix = _pt.groupby("origen")["total_pedido"].sum().sort_values(ascending=False).reset_index()
+                _col_o = {"Google Ads": "#34D399", "Google orgánico": "#22D3EE", "Meta (FB/IG)": "#818CF8", "Email": "#FBBF24", "WhatsApp": "#4ADE80",
+                          "Directo / sin dato": "#64748B", "Otros": "#F472B6", "Otros buscadores": "#38BDF8", "Sin dato": "#334155"}
+                fig = px.pie(mix, names="origen", values="total_pedido", hole=0.6, color="origen", color_discrete_map=_col_o)
+                fig.update_traces(textinfo="percent", hovertemplate="%{label}<br>$ %{value:,.0f}<extra></extra>")
+                fig.update_layout(title=dict(text="¿De dónde viene la venta de la tienda?", x=0.02), legend=dict(orientation="h", y=-0.1))
+                st.plotly_chart(estilo(fig, 340), width="stretch")
+            with o2_:
+                fr = []
+                for m in g_marcas:
+                    k_ = _gk(gcur[gcur["marca"] == m])
+                    rm = g_real_marca.get(m, {})
+                    vtm = float(_pt.loc[_pt["marca"] == m, "total_pedido"].sum())
+                    fr.append({"Marca": m, "Inversión": k_["inversion"], "Google dice": k_["valor_conv"], "Shopify confirma": rm.get("sum", 0.0),
+                               "Pedidos": int(rm.get("count", 0)), "ROAS Google": k_["roas"],
+                               "ROAS real": rm.get("sum", 0.0) / k_["inversion"] if k_["inversion"] else None,
+                               "% de la tienda": rm.get("sum", 0.0) / vtm * 100 if vtm else None})
+                st.dataframe(pd.DataFrame(fr).sort_values("Inversión", ascending=False), hide_index=True, width="stretch",
+                             column_config={"Inversión": st.column_config.NumberColumn(format="$ %,.0f"), "Google dice": st.column_config.NumberColumn(format="$ %,.0f"),
+                                            "Shopify confirma": st.column_config.NumberColumn(format="$ %,.0f"), "ROAS Google": st.column_config.NumberColumn(format="%.1fx"),
+                                            "ROAS real": st.column_config.NumberColumn(format="%.1fx"), "% de la tienda": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+                st.caption(f"Pedidos del período con dato de origen: {fmt_dec(cobertura, 0)}%. "
+                           "Si 'Google orgánico' es muy alto, puede haber anuncios sin el seguimiento automático (gclid): revisar en Google Ads → Configuración de la cuenta → Etiquetado automático.")
+
         # ---------- Evolución diaria ----------
         seccion("Evolución", "Inversión y retorno por día", "Barras = inversión. Línea = ROAS de Google.")
         _ev0 = min(g0, hoy - timedelta(days=29))
@@ -3991,12 +4209,12 @@ for _ in _abrir(tab_gads):
                 _bm = base_net[(base_net["canal"] == "Tienda Online") & (base_net["marca"].astype(str) == m) & (base_net["dia"] >= g0) & (base_net["dia"] <= g1)]
                 v_ = float(a_pedidos(_bm)["total_pedido"].sum()) if len(_bm) else 0.0
                 filas.append({"Marca": m, "Inversión": round(k_["inversion"]), "Ventas atribuidas": round(k_["valor_conv"]), "ROAS": round(k_["roas"], 1),
-                              "CPA": round(k_["cpa"]), "Venta tienda (real)": round(v_),
+                              "Venta tienda (real)": round(v_),
                               "Venta tienda / inversión": round(v_ / k_["inversion"], 1) if k_["inversion"] else None,
                               "Inversión / venta": round(k_["inversion"] / v_ * 100, 1) if v_ else None})
             st.dataframe(pd.DataFrame(filas).sort_values("Inversión", ascending=False), hide_index=True, width="stretch",
                          column_config={"Inversión": st.column_config.NumberColumn(format="$ %,.0f"), "Ventas atribuidas": st.column_config.NumberColumn(format="$ %,.0f"),
-                                        "CPA": st.column_config.NumberColumn(format="$ %,.0f"), "Venta tienda (real)": st.column_config.NumberColumn(format="$ %,.0f"),
+                                        "Venta tienda (real)": st.column_config.NumberColumn(format="$ %,.0f"),
                                         "ROAS": st.column_config.NumberColumn(format="%.1fx"), "Venta tienda / inversión": st.column_config.NumberColumn(format="%.1fx"),
                                         "Inversión / venta": st.column_config.NumberColumn(format="%.1f%%")})
         with t2:
@@ -4009,6 +4227,51 @@ for _ in _abrir(tab_gads):
                 fig.update_layout(legend=dict(orientation="h", y=-0.1), title=dict(text="Inversión por tipo", x=0.02))
                 st.plotly_chart(estilo(fig, 320), width="stretch")
                 st.caption(" · ".join(f"{r.tipo_txt}: ROAS {fmt_dec(r.ROAS or 0, 1)}x" for r in pt.itertuples()))
+
+
+        # ---------- Marca vs. no marca ----------
+        seccion("Marca vs. no marca", "¿La inversión trae clientes nuevos o cobra la venta que igual llegaba?",
+                "Búsqueda · Marca = gente que ya buscaba 'Reebok', 'Crocs'... (ROAS alto pero en gran parte venta que llegaba igual). "
+                "Búsqueda · No marca = 'zapatillas running', 'campera impermeable' (crecimiento real). Se clasifica por el nombre de la campaña.")
+        sg = gcur.groupby("segmento")[["inversion", "valor_conv", "clics"]].sum()
+        if len(sg) and sg["inversion"].sum() > 0:
+            _cmap = gcur.drop_duplicates("campaign_id").assign(_cid=lambda d: _idstr(d["campaign_id"]))[["_cid", "segmento"]]
+            _rs = g_real_camp.merge(_cmap, on="_cid", how="left").groupby("segmento")["venta_real"].sum() if len(g_real_camp) else pd.Series(dtype=float)
+            sg["ROAS Google"] = sg["valor_conv"] / sg["inversion"].where(sg["inversion"] > 0)
+            sg["Venta real (Shopify)"] = _rs.reindex(sg.index).fillna(0)
+            sg["ROAS real"] = sg["Venta real (Shopify)"] / sg["inversion"].where(sg["inversion"] > 0)
+            sg["% de la inversión"] = sg["inversion"] / sg["inversion"].sum() * 100
+            sg = sg.sort_values("inversion", ascending=False).reset_index().rename(columns={"segmento": "Segmento", "inversion": "Inversión",
+                                                                                          "valor_conv": "Ventas Google", "clics": "Clics"})
+            s1, s2 = st.columns([1.6, 1])
+            with s1:
+                st.dataframe(sg[["Segmento", "Inversión", "% de la inversión", "Ventas Google", "ROAS Google", "Venta real (Shopify)", "ROAS real", "Clics"]],
+                             hide_index=True, width="stretch",
+                             column_config={"Inversión": st.column_config.NumberColumn(format="$ %,.0f"), "Ventas Google": st.column_config.NumberColumn(format="$ %,.0f"),
+                                            "Venta real (Shopify)": st.column_config.NumberColumn(format="$ %,.0f"), "ROAS Google": st.column_config.NumberColumn(format="%.1fx"),
+                                            "ROAS real": st.column_config.NumberColumn(format="%.1fx"), "Clics": st.column_config.NumberColumn(format="%d"),
+                                            "% de la inversión": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            with s2:
+                _pm = sg.set_index("Segmento")["Inversión"]
+                _m, _n = float(_pm.get("Búsqueda · Marca", 0)), float(_pm.get("Búsqueda · No marca", 0))
+                if _m + _n > 0:
+                    st.markdown(f"**De la inversión en Búsqueda, el {fmt_dec(_m / (_m + _n) * 100, 0)}% va a búsquedas de marca.**")
+                    st.caption("Referencia: si más de la mitad de Búsqueda se va en marca, la cuenta está 'cobrando' clientes que ya eran propios. "
+                               "Conviene limitar el presupuesto de marca (o bajar el ROAS objetivo de esas campañas) y mover plata a no marca y Performance Max.")
+            g_term_ = load_aux("gads_terminos.csv")
+            if not g_term_.empty:
+                tt = g_term_[g_term_["marca"].isin(g_marcas)].copy()
+                tt["inversion"] = pd.to_numeric(tt["inversion"], errors="coerce").fillna(0)
+                tt["seg_c"] = [gads_segmento("SEARCH", c_) for c_ in tt["campania"]]
+                tt["de_marca"] = tt["termino"].map(es_busqueda_de_marca)
+                canib = tt[(tt["seg_c"] == "Búsqueda · No marca") & tt["de_marca"]].sort_values("inversion", ascending=False)
+                if len(canib):
+                    with st.expander(f"⚠️ Búsquedas de marca dentro de campañas 'no marca': {fmt_ars(canib['inversion'].sum())} en 30 días ({len(canib)} búsquedas)"):
+                        st.caption("Estas búsquedas ya contienen el nombre de la marca pero se están pagando en campañas de 'no marca' (que suelen pujar más caro). "
+                                   "Cargar el nombre de la marca como palabra negativa en esas campañas.")
+                        st.dataframe(pd.DataFrame({"Marca": canib["marca"], "Búsqueda": canib["termino"], "Campaña": canib["campania"],
+                                                   "Inversión 30d": canib["inversion"]}).head(200), hide_index=True, width="stretch",
+                                     column_config={"Inversión 30d": st.column_config.NumberColumn(format="$ %,.0f")})
 
         # ---------- Campañas ----------
         seccion("Campañas", "Rendimiento y qué hacer con cada campaña",
@@ -4034,12 +4297,17 @@ for _ in _abrir(tab_gads):
                     return f"🎯 Pierde {r['lost_r']:.0f}% por ranking"
                 return "✅ Mantener"
             cm["Acción"] = cm.apply(_acc, axis=1)
+            _rc = g_real_camp.set_index("_cid") if len(g_real_camp) else pd.DataFrame(columns=["venta_real", "pedidos_real"])
+            _ids = _idstr(pd.Series(cm.index, index=cm.index))
+            cm["Venta real"] = _ids.map(_rc["venta_real"]).fillna(0).values if len(_rc) else 0.0
+            cm["ROAS real"] = (cm["Venta real"] / cm["Inversión"]).round(1)
             cm = cm.sort_values("Inversión", ascending=False).reset_index(drop=True)
-            st.dataframe(cm[["Marca", "Campaña", "Tipo", "Acción", "Presupuesto", "Inversión", "Ventas", "ROAS", "Conv", "is_", "lost_b", "lost_r"]]
+            st.dataframe(cm[["Marca", "Campaña", "Tipo", "Acción", "Presupuesto", "Inversión", "Ventas", "ROAS", "Venta real", "ROAS real", "Conv", "is_", "lost_b", "lost_r"]]
                          .rename(columns={"is_": "% impresiones", "lost_b": "% perdido presupuesto", "lost_r": "% perdido ranking", "Presupuesto": "Presupuesto diario"}),
                          hide_index=True, width="stretch", height=min(42 + 35 * len(cm), 520),
                          column_config={"Presupuesto diario": st.column_config.NumberColumn(format="$ %,.0f"), "Inversión": st.column_config.NumberColumn(format="$ %,.0f"),
-                                        "Ventas": st.column_config.NumberColumn(format="$ %,.0f"), "ROAS": st.column_config.NumberColumn(format="%.1fx"),
+                                        "Ventas": st.column_config.NumberColumn("Ventas (Google)", format="$ %,.0f"), "ROAS": st.column_config.NumberColumn("ROAS Google", format="%.1fx"),
+                                        "Venta real": st.column_config.NumberColumn("Venta real (Shopify)", format="$ %,.0f"), "ROAS real": st.column_config.NumberColumn(format="%.1fx"),
                                         "Conv": st.column_config.NumberColumn(format="%.0f"), "% impresiones": st.column_config.NumberColumn(format="%.0f%%"),
                                         "% perdido presupuesto": st.column_config.NumberColumn(format="%.0f%%"), "% perdido ranking": st.column_config.NumberColumn(format="%.0f%%"),
                                         "Acción": st.column_config.TextColumn(width="large")})
