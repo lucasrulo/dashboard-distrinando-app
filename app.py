@@ -813,14 +813,20 @@ if P.empty:
     st.stop()
 
 _tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast", ":material/local_mall: Productos",
-         ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/campaign: Publicidad MeLi", ":material/ads_click: Google Ads",
+         ":material/inventory_2: Stock & Publicaciones", ":material/payments: Comercial", ":material/campaign: Publicidad MeLi",
          ":material/group: Clientes"]
-# Post-venta MeLi (devoluciones, reclamos, cancelaciones): solo estos usuarios
+_usr = str(AUTH.get("usuario", "")).lower()
+# Post-venta MeLi (devoluciones, reclamos, cancelaciones) y Cyber Monday: solo estos usuarios
 VER_POSTVENTA = {"afredes", "lruiz", "maguirre"}
-VE_PV = str(AUTH.get("usuario", "")).lower() in VER_POSTVENTA
-VE_CYBER = VE_PV   # Cyber Monday: mismos usuarios (lruiz y afredes)
+VE_PV = _usr in VER_POSTVENTA
+VE_CYBER = VE_PV
+# Google Ads: solo estos usuarios
+VER_GADS = {"lruiz", "maguirre", "mcaballero"}
+VE_GADS = _usr in VER_GADS
 if VE_CYBER:
     _tabs.insert(0, ":material/local_fire_department: Cyber Monday")
+if VE_GADS:
+    _tabs.insert(_tabs.index(":material/campaign: Publicidad MeLi") + 1, ":material/ads_click: Google Ads")
 if VE_PV:
     _tabs.append(":material/assignment_return: Post-venta MeLi")
 if ES_ADMIN:  # Operaciones (logística) solo para super admins
@@ -836,13 +842,18 @@ def _abrir(t):
             yield
 
 
-_o = 1 if VE_CYBER else 0
-tab_cyber = _t[0] if VE_CYBER else None
-tab_res, tab_metas, tab_prod, tab_stock, tab_com, tab_ads, tab_gads, tab_cli = _t[_o:_o + 8]
-_i = _o + 8
-tab_pv = _t[_i] if VE_PV else None
-_i += 1 if VE_PV else 0
-tab_ops = _t[_i] if ES_ADMIN else None
+_T = dict(zip(_tabs, _t))
+tab_cyber = _T.get(":material/local_fire_department: Cyber Monday")
+tab_res = _T[":material/space_dashboard: Resumen"]
+tab_metas = _T[":material/flag: Metas & Forecast"]
+tab_prod = _T[":material/local_mall: Productos"]
+tab_stock = _T[":material/inventory_2: Stock & Publicaciones"]
+tab_com = _T[":material/payments: Comercial"]
+tab_ads = _T[":material/campaign: Publicidad MeLi"]
+tab_gads = _T.get(":material/ads_click: Google Ads")
+tab_cli = _T[":material/group: Clientes"]
+tab_pv = _T.get(":material/assignment_return: Post-venta MeLi")
+tab_ops = _T.get(":material/local_shipping: Operaciones")
 
 # ==============================================================================
 # TAB 1 · RESUMEN
