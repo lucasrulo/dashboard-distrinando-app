@@ -826,7 +826,7 @@ _tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast
          ":material/group: Clientes"]
 _usr = str(AUTH.get("usuario", "")).lower()
 # Post-venta MeLi (devoluciones, reclamos, cancelaciones) y Cyber Monday: solo estos usuarios
-VER_POSTVENTA = {"afredes", "lruiz", "maguirre"}
+VER_POSTVENTA = {"afredes", "lruiz", "maguirre", "mcaballero"}
 VE_PV = _usr in VER_POSTVENTA
 VE_CYBER = VE_PV
 # Google Ads: solo estos usuarios
