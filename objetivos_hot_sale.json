@@ -1,22 +1,22 @@
 {
     "Reebok": {
         "unidades": 1200,
-        "facturacion": 400000000
+        "facturacion": 900000000
     },
     "Columbia": {
         "unidades": 1200,
-        "facturacion": 300000000
+        "facturacion": 420000000
     },
     "Crocs": {
         "unidades": 1200,
-        "facturacion": 200000000
+        "facturacion": 390000000
     },
     "Kappa": {
         "unidades": 1200,
-        "facturacion": 150000000
+        "facturacion": 235000000
     },
     "Piccadilly": {
         "unidades": 1200,
-        "facturacion": 130000000
+        "facturacion": 215000000
     }
 }
