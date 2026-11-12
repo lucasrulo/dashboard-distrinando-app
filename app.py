@@ -690,7 +690,7 @@ def pantalla_login():
             st.error(f"Demasiados intentos. Esperá {int(bloqueado_hasta - time.time())} segundos.")
             return
         datos = usuarios.get(u.strip().lower())
-        if datos and hmac.compare_digest(_hash(u.strip(), c), str(datos.get("hash", ""))):
+        if datos and hmac.compare_digest(_hash(u.strip(), c.strip()), str(datos.get("hash", "")).strip()):   # ignora espacios al copiar/pegar
             st.session_state["auth"] = {"usuario": u.strip().lower(), "nombre": datos.get("nombre", u),
                                         "rol": datos.get("rol", "usuario")}
             st.session_state.pop("login_fallos", None)
@@ -826,7 +826,7 @@ _tabs = [":material/space_dashboard: Resumen", ":material/flag: Metas & Forecast
          ":material/group: Clientes"]
 _usr = str(AUTH.get("usuario", "")).lower()
 # Post-venta MeLi (devoluciones, reclamos, cancelaciones) y Cyber Monday: solo estos usuarios
-VER_POSTVENTA = {"afredes", "lruiz", "maguirre", "mcaballero"}
+VER_POSTVENTA = {"afredes", "lruiz", "maguirre"}
 VE_PV = _usr in VER_POSTVENTA
 VE_CYBER = VE_PV
 # Google Ads: solo estos usuarios
@@ -911,6 +911,8 @@ for _ in _abrir(tab_res):
                 alertas.append(("Google: sin stock", len(_s), f"productos con inversión · {fmt_compact(pd.to_numeric(_s['inversion_7d']).sum())} en 7 días", "Google Ads", "#F472B6"))
             if not _gd.empty:
                 _gd = _gd[_gd["marca"].isin(marcas_sel)].copy()
+                if "valor_compras" in _gd.columns:
+                    _gd["valor_conv"] = _gd["valor_compras"]
                 _gd["dia"] = pd.to_datetime(_gd["fecha"]).dt.date
                 for c_ in ["inversion", "valor_conv", "is_perdida_presupuesto"]:
                     _gd[c_] = pd.to_numeric(_gd[c_], errors="coerce")
@@ -2723,6 +2725,148 @@ if tab_pv is not None:
     for _ in _abrir(tab_pv):
         pv_c = load_aux("meli_cancelaciones.csv")
         pv_r = load_aux("meli_reclamos.csv")
+        # ====================================================================== REPUTACIÓN
+        rp = load_aux("meli_reputacion.csv")
+        if rp.empty:
+            st.info("Todavía no hay datos de reputación. Se generan con el workflow diario (paso 'Reputación MercadoLibre').")
+        else:
+            REP_NIVEL = {"5_green": ("Verde", "#16A34A"), "4_light_green": ("Verde claro", "#84CC16"), "3_yellow": ("Amarillo", "#EAB308"),
+                         "2_orange": ("Naranja", "#F97316"), "1_red": ("Rojo", "#EF4444")}
+            REP_LIDER = {"platinum": "MercadoLíder Platinum", "gold": "MercadoLíder Gold", "silver": "MercadoLíder", "": "—"}
+            # Límites MLA (documentación de MeLi): MercadoLíder / Verde
+            REP_LIM = {"reclamos": (0.01, 0.015), "cancelaciones": (0.005, 0.01), "demoras": (0.08, 0.10)}
+            seccion("Reputación", "Termómetro de cada cuenta y qué pedidos lo están afectando",
+                    "Últimos 60 días. Límites de MeLi Argentina: reclamos 1% (MercadoLíder) / 1,5% (verde) · cancelaciones 0,5% / 1% · "
+                    "despachos demorados 8% / 10%. 'Margen' = cuántos casos más se pueden tener antes de pasar el límite.")
+            rp = rp[rp["marca"].isin(marcas_sel)].copy()
+            cols_r = st.columns(max(len(rp), 1))
+            filas_r = []
+            for col, (_, r_) in zip(cols_r, rp.iterrows()):
+                niv, colr = REP_NIVEL.get(str(r_.get("nivel")), (str(r_.get("nivel")) or "Sin dato", "#64748B"))
+                vent = float(pd.to_numeric(r_.get("ventas_periodo"), errors="coerce") or 0)
+                det = ""
+                fila = {"Marca": r_["marca"], "Color": niv, "MercadoLíder": REP_LIDER.get(str(r_.get("mercadolider") or "").replace("nan", ""), str(r_.get("mercadolider"))),
+                        "Ventas 60 días": int(vent)}
+                peor = 0
+                for var, txt in [("reclamos", "Reclamos"), ("cancelaciones", "Cancelaciones"), ("demoras", "Demoras")]:
+                    tasa = float(pd.to_numeric(r_.get(f"{var}_tasa"), errors="coerce") or 0)
+                    cant = float(pd.to_numeric(r_.get(f"{var}_cant"), errors="coerce") or 0)
+                    l_lid, l_ver = REP_LIM[var]
+                    margen = int(np.floor(l_lid * vent - cant)) if vent else None
+                    uso = tasa / l_lid * 100 if l_lid else 0
+                    peor = max(peor, uso)
+                    c_ = "#34D399" if uso < 70 else ("#FBBF24" if uso < 100 else "#F87171")
+                    det += (f"<div class='split-legend' style='margin-top:6px'><span>{txt}</span>"
+                            f"<span style='color:{c_};font-weight:700'>{fmt_dec(tasa * 100, 2)}% · {int(cant)}</span></div>")
+                    fila[f"{txt} %"] = round(tasa * 100, 2)
+                    fila[f"{txt} (casos)"] = int(cant)
+                    fila[f"Margen {txt.lower()} (MercadoLíder)"] = margen
+                filas_r.append(fila)
+                col.markdown(kpi_card(r_["marca"], f"<span style='color:{colr}'>● {niv}</span>",
+                                      f"<span class='delta flat'>{fila['MercadoLíder']} · {int(vent):,} ventas</span>".replace(",", "."),
+                                      det, colr, sm=True), unsafe_allow_html=True)
+            st.write("")
+            tr_ = pd.DataFrame(filas_r)
+            if len(tr_):
+                cfg_r = {f"{t} %": st.column_config.NumberColumn(format="%.2f%%") for t in ["Reclamos", "Cancelaciones", "Demoras"]}
+                cfg_r.update({f"Margen {t} (MercadoLíder)": st.column_config.NumberColumn(format="%d", help="Casos que todavía se pueden tener sin pasar el límite de MercadoLíder. Negativo = ya se pasó.")
+                              for t in ["reclamos", "cancelaciones", "demoras"]})
+                st.dataframe(tr_, hide_index=True, width="stretch", column_config=cfg_r)
+
+            # ---------- pedidos a atender ----------
+            dm = load_aux("meli_demoras.csv")
+            rr_ = load_aux("meli_reclamos_reputacion.csv")
+            _link = lambda o: f"https://www.mercadolibre.com.ar/ventas/{pd.to_numeric(o, errors='coerce'):.0f}/detalle" if pd.notna(pd.to_numeric(o, errors="coerce")) else None
+            _cfg_link = {"Ver en MeLi": st.column_config.LinkColumn(display_text="Abrir venta ↗")}
+            for d_ in (dm, rr_):
+                if not d_.empty:
+                    d_.drop(d_[~d_["marca"].isin(marcas_sel)].index, inplace=True)
+            n_riesgo = int(dm["en_riesgo"].astype(str).str.lower().eq("true").sum()) if not dm.empty and "en_riesgo" in dm.columns else 0
+            n_tarde = int(dm["demorado"].astype(str).str.lower().eq("true").sum()) if not dm.empty and "demorado" in dm.columns else 0
+            rr_af = rr_[rr_["afecta"] == "affected"] if not rr_.empty else rr_
+            n_resol = int(rr_af["se_puede_resolver"].astype(str).str.lower().eq("true").sum()) if len(rr_af) else 0
+            canc_n = pv_c_rep = pd.DataFrame()
+            _pc = load_aux("meli_cancelaciones.csv")
+            if not _pc.empty:
+                _pc = _pc[_pc["marca"].isin(marcas_sel)].copy()
+                _pc["f"] = pd.to_datetime(_pc["fecha"], errors="coerce", utc=True)
+                pv_c_rep = _pc[(_pc["f"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=60)) &
+                               _pc["cancel_por"].astype(str).str.lower().isin(["seller", "vendedor"])]
+            r1, r2, r3, r4 = st.tabs([f"⏰ Por despachar YA ({n_riesgo})", f"🧾 Reclamos que afectan y se pueden resolver ({n_resol})",
+                                      f"🚚 Despachados tarde ({n_tarde})", f"❌ Cancelaciones nuestras ({len(pv_c_rep)})"])
+            with r1:
+                if dm.empty:
+                    st.caption("Todavía no hay datos de envíos.")
+                else:
+                    x = dm[dm["en_riesgo"].astype(str).str.lower() == "true"].copy()
+                    x["lim"] = pd.to_datetime(x["limite_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR)
+                    x = x.sort_values("lim")
+                    st.caption("Ventas sin despachar con el límite de despacho **vencido o que vence en las próximas 24 hs**. "
+                               "Si se despachan tarde, cuentan como demora en la reputación. Ordenadas por urgencia.")
+                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Venta": x["nro_pedido"].astype(str), "Producto": x["producto"],
+                                               "Límite de despacho": x["lim"].dt.strftime("%d/%m %H:%M"),
+                                               "Estado": np.where(x["lim"] < pd.Timestamp.now(tz=ZONA_AR), "🔴 Vencido", "🟡 Vence hoy"),
+                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch", column_config=_cfg_link)
+            with r2:
+                if rr_.empty:
+                    st.caption("Todavía no hay datos de reclamos con impacto en reputación.")
+                else:
+                    x = rr_af.copy()
+                    if not pv_r.empty:
+                        x = x.merge(pv_r[["claim_id", "motivo", "titulos", "monto", "etapa", "estado"]].drop_duplicates("claim_id"), on="claim_id", how="left")
+                    x["hasta"] = pd.to_datetime(x["resolver_hasta"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR)
+                    x["res"] = x["se_puede_resolver"].astype(str).str.lower() == "true"
+                    x = x.sort_values(["res", "hasta"], ascending=[False, True])
+                    st.caption(f"**{len(x)} reclamos afectan la reputación** en los últimos 60 días; **{n_resol} todavía se pueden resolver** "
+                               "con el comprador antes de la fecha límite para que dejen de contar. Los cerrados ya no se pueden revertir desde acá: "
+                               "si fueron por un problema de MeLi o del correo, pedir la revisión desde la venta.")
+                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Reclamo": x["claim_id"].astype(str),
+                                               "Motivo": x["motivo"].map(lambda m: PV_MOTIVOS.get(str(m), (str(m), ""))[0] if "PV_MOTIVOS" in globals() else m) if "motivo" in x.columns else "",
+                                               "Producto": x["titulos"] if "titulos" in x.columns else "",
+                                               "Monto": pd.to_numeric(x.get("monto"), errors="coerce"),
+                                               "Estado": np.where(x["res"], "🟡 Se puede resolver", "⚫ Cerrado (ya cuenta)"),
+                                               "Resolver hasta": x["hasta"].dt.strftime("%d/%m %H:%M"),
+                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch",
+                                 column_config={**_cfg_link, "Monto": st.column_config.NumberColumn(format="$ %,.0f")})
+            with r3:
+                if dm.empty:
+                    st.caption("Todavía no hay datos de envíos.")
+                else:
+                    x = dm[dm["demorado"].astype(str).str.lower() == "true"].copy()
+                    x["h"] = pd.to_numeric(x["demora_horas"], errors="coerce")
+                    x = x.sort_values("h")
+                    chicas = int((x["h"] <= 3).sum())
+                    st.caption(f"Ventas despachadas después del límite: **cuentan como demora**. **{chicas} se pasaron 3 horas o menos**: suelen ser "
+                               "errores de escaneo en la agencia o colectas que pasaron tarde. Pedir la revisión a MeLi desde el detalle de la venta "
+                               "(botón de ayuda) adjuntando el comprobante de entrega en la agencia con fecha y hora.")
+                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Venta": x["nro_pedido"].astype(str), "Producto": x["producto"],
+                                               "Límite": pd.to_datetime(x["limite_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR).dt.strftime("%d/%m %H:%M"),
+                                               "Despachado": pd.to_datetime(x["fecha_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR).dt.strftime("%d/%m %H:%M"),
+                                               "Horas de demora": x["h"],
+                                               "Sugerencia": np.where(x["h"] <= 3, "📩 Reclamar a MeLi", ""),
+                                               "Ver en MeLi": x["orden_meli"].map(_link)}).head(500), hide_index=True, width="stretch",
+                                 column_config={**_cfg_link, "Horas de demora": st.column_config.NumberColumn(format="%.1f")})
+            with r4:
+                if pv_c_rep.empty:
+                    st.caption("Sin cancelaciones nuestras en los últimos 60 días.")
+                else:
+                    x = pv_c_rep.sort_values("f", ascending=False)
+                    st.caption("Ventas que cancelamos nosotros (falta de stock, error de precio...). Cada una suma a la variable de cancelaciones.")
+                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Fecha": x["f"].dt.tz_convert(ZONA_AR).dt.strftime("%d/%m"), "Motivo": x["cancel_motivo"],
+                                               "Producto": x["titulos"], "SKU": x["skus"], "Monto": pd.to_numeric(x["monto"], errors="coerce"),
+                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch",
+                                 column_config={**_cfg_link, "Monto": st.column_config.NumberColumn(format="$ %,.0f")})
+            rh = load_aux("meli_reputacion_hist.csv")
+            if not rh.empty and rh["fecha"].nunique() >= 2:
+                rh = rh[rh["marca"].isin(marcas_sel)]
+                v_ = st.segmented_control("Evolución de", ["Reclamos", "Cancelaciones", "Demoras"], default="Reclamos", key="rep_ev") or "Reclamos"
+                rh["valor"] = pd.to_numeric(rh[f"{v_.lower()}_tasa"], errors="coerce") * 100
+                fig = px.line(rh, x="fecha", y="valor", color="marca", color_discrete_map=PALETA_MARCAS, markers=True)
+                fig.add_hline(y=REP_LIM[v_.lower()][0] * 100, line_dash="dot", line_color="#FFE600", annotation_text="MercadoLíder")
+                fig.update_layout(yaxis_title="%", xaxis_title="", xaxis=dict(type="date", tickformat="%d/%m", dtick=86400000))
+                st.plotly_chart(estilo(fig, 300), width="stretch")
+            st.divider()
+
         if pv_c.empty and pv_r.empty:
             st.info("Todavía no hay datos de post-venta. Se generan con el workflow diario (paso 'Post-venta MercadoLibre').")
         else:
@@ -3959,6 +4103,10 @@ for _ in _abrir(tab_gads):
         g_dia["dia"] = pd.to_datetime(g_dia["fecha"]).dt.date
         g_dia["tipo_txt"] = g_dia["tipo"].map(GADS_TIPOS).fillna(g_dia["tipo"].astype(str).str.title())
         g_dia["segmento"] = [gads_segmento(t_, n_) for t_, n_ in zip(g_dia["tipo"], g_dia["campania"])]
+        G_SOLO_COMPRA = "valor_compras" in g_dia.columns
+        if G_SOLO_COMPRA:   # se cuenta solo la compra (Google Shopping App Purchase), no carritos ni vistas
+            g_dia = g_dia.rename(columns={"conversiones": "conv_todas", "valor_conv": "valor_todas"}).rename(
+                columns={"compras": "conversiones", "valor_compras": "valor_conv"})
         for c_ in ["inversion", "valor_conv", "conversiones", "clics", "impresiones", "presupuesto_diario"]:
             g_dia[c_] = pd.to_numeric(g_dia[c_], errors="coerce").fillna(0)
         _act = pd.to_datetime(g_dia["actualizado"].iloc[0], errors="coerce")
@@ -4045,6 +4193,23 @@ for _ in _abrir(tab_gads):
                        "hay acciones que no son compras (agregar al carrito, vistas, etc.) marcadas como conversión principal. "
                        "Eso infla el ROAS y confunde a las campañas de Performance Max. Revisar en Google Ads → Objetivos → Conversiones "
                        "y dejar como 'principal' solo la compra.")
+        if G_SOLO_COMPRA:
+            st.caption("✅ Ventas y conversiones de Google = solo la acción de compra **Google Shopping App Purchase** (incluye la de campañas Demand Gen / YouTube "
+                       "aunque su objetivo sea otro). No se cuentan carritos, vistas ni otras acciones.")
+        g_acc = load_aux("gads_acciones_conversion.csv")
+        if not g_acc.empty:
+            with st.expander("🔧 Acciones de conversión configuradas en Google Ads (últimos 30 días)"):
+                ga_ = g_acc[g_acc["marca"].isin(g_marcas)].groupby(["accion", "es_compra"], as_index=False)[["todas_conv", "todas_valor", "conv_principal"]].sum()
+                ga_ = ga_.sort_values("todas_conv", ascending=False)
+                st.dataframe(pd.DataFrame({"Acción": ga_["accion"], "¿Es la compra?": np.where(ga_["es_compra"].astype(str).str.lower() == "true", "✅ Sí", ""),
+                                           "Conversiones (todas)": ga_["todas_conv"].round(0), "Valor": ga_["todas_valor"].round(0),
+                                           "Cuenta como principal": ga_["conv_principal"].round(0)}),
+                             hide_index=True, width="stretch",
+                             column_config={"Valor": st.column_config.NumberColumn(format="$ %,.0f"),
+                                            "Conversiones (todas)": st.column_config.NumberColumn(format="%,.0f"),
+                                            "Cuenta como principal": st.column_config.NumberColumn(format="%,.0f")})
+                st.caption("'Cuenta como principal' = lo que Google usa para optimizar las campañas. Si acciones que no son compras tienen valores altos ahí, "
+                           "las campañas están optimizando hacia eso.")
         st.caption("ROAS Google = lo que Google dice que vendió. 'Venta tienda por $1 invertido' = venta real total de la Tienda Online / inversión en Google: "
                    "es el número más honesto para saber si la inversión paga (incluye venta que no vino por Google).")
 
