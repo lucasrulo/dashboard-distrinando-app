@@ -1041,6 +1041,55 @@ for _ in _abrir(tab_res):
 
     Pv, Pv_prev = _filtro(P), _filtro(P_prev)
     Pv_hoy = _filtro(P_hoy) if not P_hoy.empty else P_hoy
+
+    # ---- Grupo Distrinando: total de las marcas elegidas ----
+    if len(Pv):
+        rg = resumen(Pv)
+        rgp = resumen(Pv_prev) if (hay_prev and len(Pv_prev)) else None
+        hoy_g = float(Pv_hoy["total_pedido"].sum()) if not Pv_hoy.empty else 0.0
+        upt_g = rg["un"] / rg["ords"] if rg["ords"] else 0
+        asp_g = rg["fact"] / rg["un"] if rg["un"] else 0
+        upt_gp = rgp["un"] / rgp["ords"] if (rgp and rgp["ords"]) else None
+        asp_gp = rgp["fact"] / rgp["un"] if (rgp and rgp["un"]) else None
+        _sh = Pv.groupby(Pv["marca"].astype(str))["total_pedido"].sum().reindex(marcas_orden).fillna(0)
+        _tot = float(_sh.sum()) or 1.0
+        barra_m = "".join(f"<div style='width:{v / _tot * 100:.2f}%;background:{PALETA_MARCAS.get(m, '#94A3B8')}'></div>" for m, v in _sh.items() if v > 0)
+        ley_m = "".join(f"<span><span class='dot' style='background:{PALETA_MARCAS.get(m, '#94A3B8')}'></span>{m} {v / _tot * 100:.0f}%</span>" for m, v in _sh.items())
+        if vista_m == "General":
+            pie_c = split_html(por_canal_vals(Pv, "total_pedido"))
+        else:
+            _tg = float(P["total_pedido"].sum())
+            _shc = rg["fact"] / _tg * 100 if _tg else 0
+            pie_c = (f"<div class='split'><div style='width:{_shc:.2f}%;background:{COLOR_CANAL[vista_m]}'></div></div>"
+                     f"<div class='split-legend'><span><span class='dot' style='background:{COLOR_CANAL[vista_m]}'></span>"
+                     f"{fmt_dec(_shc, 0)}% de la venta del grupo</span></div>")
+
+        def _met(lbl, val, d_html="", tip=""):
+            return (f"<div style='flex:1;min-width:92px' title='{tip}'><div style='font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#8B95A7'>{lbl}</div>"
+                    f"<div style='font-family:Space Grotesk, sans-serif;font-size:20px;font-weight:700;color:#F8FAFC;margin:4px 0'>{val}</div>{d_html}</div>")
+        _com = ""
+        if vista_m == "MercadoLibre" and "comision" in Pv.columns:
+            _com = _met("Comisión MeLi", f"<span style='color:#F87171'>{fmt_dec(Pv['comision'].sum() / rg['fact'] * 100 if rg['fact'] else 0)}%</span>")
+        html(f"<div class='brand' style='--b-accent:#FFFFFF;margin-bottom:14px;padding:20px 24px'>"
+             f"<div style='display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start'>"
+             f"<div style='min-width:240px;flex:1.2'><div class='brand-name' style='color:#F8FAFC;letter-spacing:2px'>GRUPO DISTRINANDO"
+             f"</div><div style='font-size:11px;color:#8B95A7;letter-spacing:1px;margin-top:2px'>{len(marcas_orden)} marcas · {vista_m}</div>"
+             f"<div class='brand-big' style='font-size:34px'>{fmt_kpi(rg['fact'])}</div>{delta_html(rg['fact'], rgp['fact'] if rgp else None, cap='vs período anterior')}"
+             f"<div class='row' style='margin-top:10px'><span>Hoy</span><b style='color:#22D3EE'>{fmt_ars(hoy_g)}</b></div></div>"
+             f"<div style='display:flex;flex-wrap:wrap;gap:14px;flex:3.2;padding-top:6px'>"
+             + _met("Órdenes", fmt_num(rg["ords"]), delta_html(rg["ords"], rgp["ords"] if rgp else None, cap=""))
+             + _met("Unidades", fmt_num(rg["un"]), delta_html(rg["un"], rgp["un"] if rgp else None, cap=""))
+             + _met("AOV", fmt_ars(rg["tkt"]), delta_html(rg["tkt"], rgp["tkt"] if rgp else None, cap=""), "Average Order Value")
+             + _met("UPT", fmt_dec(upt_g, 2), delta_html(upt_g, upt_gp, cap=""), "Units per Transaction")
+             + _met("ASP", fmt_ars(asp_g), delta_html(asp_g, asp_gp, cap=""), "Average Selling Price")
+             + _com +
+             f"</div></div>"
+             f"<div style='display:flex;flex-wrap:wrap;gap:24px;margin-top:14px'>"
+             f"<div style='flex:1.6;min-width:280px'><div style='font-size:11px;color:#8B95A7;margin-bottom:4px'>Participación por marca</div>"
+             f"<div class='split'>{barra_m}</div><div class='split-legend'>{ley_m}</div></div>"
+             f"<div style='flex:1;min-width:220px'><div style='font-size:11px;color:#8B95A7;margin-bottom:4px'>Por canal</div>{pie_c}</div>"
+             f"</div></div>")
+
     for i in range(0, len(marcas_orden), 5):
         cols = st.columns(5)
         for j, m in enumerate(marcas_orden[i:i + 5]):
