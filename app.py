@@ -2822,89 +2822,137 @@ if tab_pv is not None:
                               for t in ["reclamos", "cancelaciones", "demoras"]})
                 st.dataframe(tr_, hide_index=True, width="stretch", column_config=cfg_r)
 
-            # ---------- pedidos a atender ----------
+            # ---------- pedidos que afectan la reputación (con descarga a Excel) ----------
+            seccion("Qué la está afectando", "Ventas que cuentan en la reputación",
+                    "Elegí la cuenta, revisá cada lista y descargala en Excel para reclamar. Demoras = las que MeLi marca como despacho tarde.")
             dm = load_aux("meli_demoras.csv")
             rr_ = load_aux("meli_reclamos_reputacion.csv")
+            _pc = load_aux("meli_cancelaciones.csv")
+            _ctas = [m for m in marcas_sel if m in set(rp["marca"])]
+            cta = st.segmented_control("Cuenta", ["Todas"] + _ctas, default=(_ctas[0] if len(_ctas) == 1 else "Todas"), key="rep_cuenta") or "Todas"
+            _sel = _ctas if cta == "Todas" else [cta]
             _link = lambda o: f"https://www.mercadolibre.com.ar/ventas/{pd.to_numeric(o, errors='coerce'):.0f}/detalle" if pd.notna(pd.to_numeric(o, errors="coerce")) else None
             _cfg_link = {"Ver en MeLi": st.column_config.LinkColumn(display_text="Abrir venta ↗")}
-            for d_ in (dm, rr_):
-                if not d_.empty:
-                    d_.drop(d_[~d_["marca"].isin(marcas_sel)].index, inplace=True)
-            n_riesgo = int(dm["en_riesgo"].astype(str).str.lower().eq("true").sum()) if not dm.empty and "en_riesgo" in dm.columns else 0
-            n_tarde = int(dm["demorado"].astype(str).str.lower().eq("true").sum()) if not dm.empty and "demorado" in dm.columns else 0
-            rr_af = rr_[rr_["afecta"] == "affected"] if not rr_.empty else rr_
-            n_resol = int(rr_af["se_puede_resolver"].astype(str).str.lower().eq("true").sum()) if len(rr_af) else 0
-            canc_n = pv_c_rep = pd.DataFrame()
-            _pc = load_aux("meli_cancelaciones.csv")
+            _fd = lambda s_: pd.to_datetime(s_, errors="coerce", utc=True, format="mixed").dt.tz_convert(ZONA_AR)
+            dm = dm[dm["marca"].isin(_sel)].copy() if not dm.empty else dm
+            rr_ = rr_[rr_["marca"].isin(_sel)].copy() if not rr_.empty else rr_
+
+            # --- Demoras (lo que MeLi cuenta como despacho tarde)
+            t_dem = pd.DataFrame()
+            if not dm.empty:
+                x = dm[dm["demorado"].astype(str).str.lower() == "true"].copy()
+                x["lim"] = _fd(x["limite_despacho"])
+                x["des"] = _fd(x["fecha_despacho"])
+                x["h"] = pd.to_numeric(x["demora_horas"], errors="coerce")
+                # Candidatas fuertes a reclamar: MeLi la marca tarde pero se despachó dentro del día límite, o se pasó pocas horas
+                x["sug"] = np.select([x["h"].notna() & (x["h"] <= 0), x["h"].notna() & (x["h"] <= 12)],
+                                     ["📩 Reclamar: despachada a tiempo", "📩 Reclamar: demora menor a 12 hs"], "")
+                x = x.sort_values(["sug", "h"], ascending=[False, True])
+                t_dem = pd.DataFrame({"Cuenta": x["marca"], "Venta": x["nro_pedido"].astype(str), "Orden": x["orden_meli"].astype(str),
+                                      "Envío": x["shipping_id"].astype(str), "Fecha de venta": _fd(x["fecha_venta"]).dt.strftime("%d/%m/%Y %H:%M"),
+                                      "Límite de despacho": x["lim"].dt.strftime("%d/%m/%Y"), "Despachado": x["des"].dt.strftime("%d/%m/%Y %H:%M"),
+                                      "Horas después del límite": x["h"], "Producto": x["producto"], "Monto": pd.to_numeric(x["monto"], errors="coerce"),
+                                      "Provincia": x.get("provincia"), "Sugerencia": x["sug"], "Ver en MeLi": x["orden_meli"].map(_link)})
+            # --- Reclamos que afectan
+            t_rec = pd.DataFrame()
+            if not rr_.empty:
+                x = rr_[rr_["afecta"] == "affected"].copy()
+                if not pv_r.empty:
+                    x = x.merge(pv_r[["claim_id", "motivo", "titulos", "skus", "monto", "etapa", "estado", "fecha"]].drop_duplicates("claim_id")
+                                .rename(columns={"fecha": "f_rec"}), on="claim_id", how="left")
+                x["res"] = x["se_puede_resolver"].astype(str).str.lower() == "true"
+                x["hasta"] = _fd(x["resolver_hasta"])
+                x = x.sort_values(["res", "hasta"], ascending=[False, True])
+                t_rec = pd.DataFrame({"Cuenta": x["marca"], "Reclamo": x["claim_id"].astype(str), "Orden": x["orden_meli"].astype(str),
+                                      "Fecha del reclamo": _fd(x.get("f_rec")).dt.strftime("%d/%m/%Y") if "f_rec" in x.columns else "",
+                                      "Motivo": x["motivo"].map(lambda m: PV_MOTIVOS.get(str(m), (str(m), ""))[0]) if "motivo" in x.columns else "",
+                                      "Producto": x.get("titulos", ""), "SKU": x.get("skus", ""), "Monto": pd.to_numeric(x.get("monto"), errors="coerce"),
+                                      "Etapa": x.get("etapa", ""), "Estado": np.where(x["res"], "🟡 Se puede resolver", "⚫ Cerrado (ya cuenta)"),
+                                      "Resolver hasta": x["hasta"].dt.strftime("%d/%m/%Y %H:%M"), "Ver en MeLi": x["orden_meli"].map(_link)})
+            # --- Cancelaciones nuestras
+            t_can = pd.DataFrame()
             if not _pc.empty:
-                _pc = _pc[_pc["marca"].isin(marcas_sel)].copy()
-                _pc["f"] = pd.to_datetime(_pc["fecha"], errors="coerce", utc=True)
-                pv_c_rep = _pc[(_pc["f"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=60)) &
-                               _pc["cancel_por"].astype(str).str.lower().isin(["seller", "vendedor"])]
-            r1, r2, r3, r4 = st.tabs([f"⏰ Por despachar YA ({n_riesgo})", f"🧾 Reclamos que afectan y se pueden resolver ({n_resol})",
-                                      f"🚚 Despachados tarde ({n_tarde})", f"❌ Cancelaciones nuestras ({len(pv_c_rep)})"])
-            with r1:
-                if dm.empty:
-                    st.caption("Todavía no hay datos de envíos.")
-                else:
-                    x = dm[dm["en_riesgo"].astype(str).str.lower() == "true"].copy()
-                    x["lim"] = pd.to_datetime(x["limite_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR)
-                    x = x.sort_values("lim")
-                    st.caption("Ventas sin despachar con el límite de despacho **vencido o que vence en las próximas 24 hs**. "
-                               "Si se despachan tarde, cuentan como demora en la reputación. Ordenadas por urgencia.")
-                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Venta": x["nro_pedido"].astype(str), "Producto": x["producto"],
-                                               "Límite de despacho": x["lim"].dt.strftime("%d/%m %H:%M"),
-                                               "Estado": np.where(x["lim"] < pd.Timestamp.now(tz=ZONA_AR), "🔴 Vencido", "🟡 Vence hoy"),
-                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch", column_config=_cfg_link)
-            with r2:
-                if rr_.empty:
-                    st.caption("Todavía no hay datos de reclamos con impacto en reputación.")
-                else:
-                    x = rr_af.copy()
-                    if not pv_r.empty:
-                        x = x.merge(pv_r[["claim_id", "motivo", "titulos", "monto", "etapa", "estado"]].drop_duplicates("claim_id"), on="claim_id", how="left")
-                    x["hasta"] = pd.to_datetime(x["resolver_hasta"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR)
-                    x["res"] = x["se_puede_resolver"].astype(str).str.lower() == "true"
-                    x = x.sort_values(["res", "hasta"], ascending=[False, True])
-                    st.caption(f"**{len(x)} reclamos afectan la reputación** en los últimos 60 días; **{n_resol} todavía se pueden resolver** "
-                               "con el comprador antes de la fecha límite para que dejen de contar. Los cerrados ya no se pueden revertir desde acá: "
-                               "si fueron por un problema de MeLi o del correo, pedir la revisión desde la venta.")
-                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Reclamo": x["claim_id"].astype(str),
-                                               "Motivo": x["motivo"].map(lambda m: PV_MOTIVOS.get(str(m), (str(m), ""))[0] if "PV_MOTIVOS" in globals() else m) if "motivo" in x.columns else "",
-                                               "Producto": x["titulos"] if "titulos" in x.columns else "",
-                                               "Monto": pd.to_numeric(x.get("monto"), errors="coerce"),
-                                               "Estado": np.where(x["res"], "🟡 Se puede resolver", "⚫ Cerrado (ya cuenta)"),
-                                               "Resolver hasta": x["hasta"].dt.strftime("%d/%m %H:%M"),
-                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch",
-                                 column_config={**_cfg_link, "Monto": st.column_config.NumberColumn(format="$ %,.0f")})
+                x = _pc[_pc["marca"].isin(_sel)].copy()
+                x["f"] = _fd(x["fecha"])
+                x = x[(x["f"] >= pd.Timestamp.now(tz=ZONA_AR) - pd.Timedelta(days=60)) & x["cancel_por"].astype(str).str.lower().isin(["seller", "vendedor"])]
+                x = x.sort_values("f", ascending=False)
+                t_can = pd.DataFrame({"Cuenta": x["marca"], "Orden": x["orden_meli"].astype(str), "Fecha": x["f"].dt.strftime("%d/%m/%Y"),
+                                      "Motivo": x["cancel_motivo"], "Producto": x["titulos"], "SKU": x["skus"],
+                                      "Monto": pd.to_numeric(x["monto"], errors="coerce"), "Ver en MeLi": x["orden_meli"].map(_link)})
+            # --- Por despachar YA
+            t_urg = pd.DataFrame()
+            if not dm.empty:
+                x = dm[dm["en_riesgo"].astype(str).str.lower() == "true"].copy()
+                x["lim"] = _fd(x["limite_despacho"])
+                x = x.sort_values("lim")
+                t_urg = pd.DataFrame({"Cuenta": x["marca"], "Venta": x["nro_pedido"].astype(str), "Producto": x["producto"],
+                                      "Límite de despacho": x["lim"].dt.strftime("%d/%m/%Y"),
+                                      "Estado": np.where(x["vencido_sin_despachar"].astype(str).str.lower() == "true", "🔴 Vencido", "🟡 Vence hoy"),
+                                      "Ver en MeLi": x["orden_meli"].map(_link)})
+
+            # Comparación con lo que informa MeLi
+            if len(_sel):
+                _rp = rp[rp["marca"].isin(_sel)]
+                _cmp = []
+                for _, r_ in _rp.iterrows():
+                    m_ = r_["marca"]
+                    _cmp.append(f"**{m_}**: demoras MeLi {int(pd.to_numeric(r_.get('demoras_cant'), errors='coerce') or 0):,} · en la lista "
+                                f"{int((t_dem['Cuenta'] == m_).sum()) if len(t_dem) else 0:,}".replace(",", "."))
+                st.caption(" · ".join(_cmp) + ". Si la lista tiene menos casos que MeLi, el robot todavía está terminando de revisar envíos.")
+
+            def _excel(hojas):
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                    for nom, d in hojas.items():
+                        (d if len(d) else pd.DataFrame({"Sin casos": []})).rename(columns={"Ver en MeLi": "Link a la venta"}).to_excel(w, sheet_name=nom[:31], index=False)
+                        ws = w.sheets[nom[:31]]
+                        for col in ws.columns:
+                            ws.column_dimensions[col[0].column_letter].width = min(max(len(str(col[0].value or "")) + 2, 12), 60)
+                        ws.freeze_panes = "A2"
+                return buf.getvalue()
+            _nom = "todas" if cta == "Todas" else cta.lower()
+            try:
+                st.download_button(f"⬇️ Descargar todo en Excel ({cta})", _excel({"Demoras": t_dem, "Reclamos que afectan": t_rec,
+                                                                                  "Cancelaciones nuestras": t_can, "Por despachar YA": t_urg}),
+                                   file_name=f"reputacion_meli_{_nom}_{hoy:%Y%m%d}.xlsx", type="primary", icon=":material/download:", key="rep_xls_all")
+            except Exception as e:
+                st.caption(f"No se pudo armar el Excel ({e}). Revisá que 'openpyxl' esté en requirements.txt.")
+
+            r3, r2, r4, r1 = st.tabs([f"🚚 Demoras ({len(t_dem):,})".replace(",", "."), f"🧾 Reclamos que afectan ({len(t_rec)})",
+                                      f"❌ Cancelaciones nuestras ({len(t_can)})", f"⏰ Por despachar YA ({len(t_urg)})"])
+            _cfg_m = {**_cfg_link, "Monto": st.column_config.NumberColumn(format="$ %,.0f")}
             with r3:
-                if dm.empty:
-                    st.caption("Todavía no hay datos de envíos.")
+                if t_dem.empty:
+                    st.caption("Todavía no hay datos de demoras (se completan con el workflow diario).")
                 else:
-                    x = dm[dm["demorado"].astype(str).str.lower() == "true"].copy()
-                    x["h"] = pd.to_numeric(x["demora_horas"], errors="coerce")
-                    x = x.sort_values("h")
-                    chicas = int((x["h"] <= 3).sum())
-                    st.caption(f"Ventas despachadas después del límite: **cuentan como demora**. **{chicas} se pasaron 3 horas o menos**: suelen ser "
-                               "errores de escaneo en la agencia o colectas que pasaron tarde. Pedir la revisión a MeLi desde el detalle de la venta "
-                               "(botón de ayuda) adjuntando el comprobante de entrega en la agencia con fecha y hora.")
-                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Venta": x["nro_pedido"].astype(str), "Producto": x["producto"],
-                                               "Límite": pd.to_datetime(x["limite_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR).dt.strftime("%d/%m %H:%M"),
-                                               "Despachado": pd.to_datetime(x["fecha_despacho"], errors="coerce", utc=True).dt.tz_convert(ZONA_AR).dt.strftime("%d/%m %H:%M"),
-                                               "Horas de demora": x["h"],
-                                               "Sugerencia": np.where(x["h"] <= 3, "📩 Reclamar a MeLi", ""),
-                                               "Ver en MeLi": x["orden_meli"].map(_link)}).head(500), hide_index=True, width="stretch",
-                                 column_config={**_cfg_link, "Horas de demora": st.column_config.NumberColumn(format="%.1f")})
+                    n_s = int((t_dem["Sugerencia"] != "").sum())
+                    st.caption(f"Ventas que MeLi cuenta como **despacho con demora**. **{n_s} son candidatas fuertes a reclamar**: se despacharon dentro del día "
+                               "límite o con menos de 12 hs de atraso (suelen ser escaneos tardíos en la agencia o colectas que pasaron tarde). "
+                               "Reclamar desde el detalle de la venta en MeLi adjuntando el comprobante de despacho con fecha y hora.")
+                    st.dataframe(t_dem, hide_index=True, width="stretch", height=480,
+                                 column_config={**_cfg_m, "Horas después del límite": st.column_config.NumberColumn(format="%.1f")})
+                    st.download_button("⬇️ Excel de demoras", _excel({"Demoras": t_dem}), file_name=f"demoras_meli_{_nom}_{hoy:%Y%m%d}.xlsx", key="rep_xls_dem")
+            with r2:
+                if t_rec.empty:
+                    st.caption("Sin reclamos que afecten la reputación (o todavía sin datos).")
+                else:
+                    st.caption("Reclamos que MeLi informa que **afectan la reputación**. Los '🟡 Se puede resolver' todavía se pueden solucionar con el comprador "
+                               "antes de la fecha para que dejen de contar. Si un reclamo fue por un problema de MeLi o del correo, pedir la revisión desde la venta.")
+                    st.dataframe(t_rec, hide_index=True, width="stretch", height=420, column_config=_cfg_m)
+                    st.download_button("⬇️ Excel de reclamos", _excel({"Reclamos que afectan": t_rec}), file_name=f"reclamos_meli_{_nom}_{hoy:%Y%m%d}.xlsx", key="rep_xls_rec")
             with r4:
-                if pv_c_rep.empty:
+                if t_can.empty:
                     st.caption("Sin cancelaciones nuestras en los últimos 60 días.")
                 else:
-                    x = pv_c_rep.sort_values("f", ascending=False)
                     st.caption("Ventas que cancelamos nosotros (falta de stock, error de precio...). Cada una suma a la variable de cancelaciones.")
-                    st.dataframe(pd.DataFrame({"Marca": x["marca"], "Fecha": x["f"].dt.tz_convert(ZONA_AR).dt.strftime("%d/%m"), "Motivo": x["cancel_motivo"],
-                                               "Producto": x["titulos"], "SKU": x["skus"], "Monto": pd.to_numeric(x["monto"], errors="coerce"),
-                                               "Ver en MeLi": x["orden_meli"].map(_link)}), hide_index=True, width="stretch",
-                                 column_config={**_cfg_link, "Monto": st.column_config.NumberColumn(format="$ %,.0f")})
+                    st.dataframe(t_can, hide_index=True, width="stretch", height=420, column_config=_cfg_m)
+                    st.download_button("⬇️ Excel de cancelaciones", _excel({"Cancelaciones nuestras": t_can}), file_name=f"cancelaciones_meli_{_nom}_{hoy:%Y%m%d}.xlsx", key="rep_xls_can")
+            with r1:
+                if t_urg.empty:
+                    st.caption("No hay ventas con el límite de despacho vencido o por vencer.")
+                else:
+                    st.caption("Ventas sin despachar con el límite **vencido o que vence hoy**. Si salen tarde, suman como demora. Ordenadas por urgencia.")
+                    st.dataframe(t_urg, hide_index=True, width="stretch", height=420, column_config=_cfg_link)
             rh = load_aux("meli_reputacion_hist.csv")
             if not rh.empty and rh["fecha"].nunique() >= 2:
                 rh = rh[rh["marca"].isin(marcas_sel)]

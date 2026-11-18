@@ -1,7 +1,7 @@
 streamlit==1.65.0
 pandas==2.3.3
 plotly==6.9.0
-streamlit-autorefresh==1.0.1
 requests>=2.31,<3.0
 numpy==2.2.6
 pyarrow==18.1.0
+openpyxl==3.1.5
